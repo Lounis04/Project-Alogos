@@ -562,7 +562,4 @@ class TreeIA:
         if best is None:
             raise ValueError("Aucun coup trouvé !")
 
-        # Sauvegarde JSON si entraînement
-        self.save_transpo()
-
         return board.san(best)
