@@ -1,6 +1,7 @@
 import json
 import os
 import random
+import time
 import chess
 
 from chess import PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING, WHITE, BLACK
@@ -69,6 +70,13 @@ class TreeIA:
 
         # Compteur de nœuds pour debug
         self.nodes_searched = 0
+
+        # ==============================================================
+        #   Time management
+        # ==============================================================
+        self.time_limit = 5.0          # Limite en secondes par coup
+        self._search_start_time = 0.0
+        self._time_exceeded = False
 
     # Sauvegarde conditionnelle (uniquement en mode entraînement)
     def save_transpo(self):
@@ -185,6 +193,9 @@ class TreeIA:
         else:
             score += self._evaluate_castling_rights()
 
+        # Reconnaissance tactique
+        score += self._evaluate_tactics()
+
         return score
 
     def _evaluate_castling_rights(self):
@@ -227,7 +238,7 @@ class TreeIA:
         black_dist = abs(black_king % 8 - center) + abs(black_king // 8 - center)
         
         # Moins de distance = mieux
-        score += int((black_dist - white_dist) * 10)
+        score += int((black_dist - white_dist) * 15)   # augmenté (était 10)
         
         # Roi + pion vs roi
         white_pieces = sum(len(self.board.pieces(pt, WHITE)) for pt in [KNIGHT, BISHOP, ROOK, QUEEN])
@@ -376,39 +387,43 @@ class TreeIA:
         """Contrôle du centre - point de vue BLANCS"""
         score = 0
         center_squares = [27, 28, 35, 36]
-        
+        extended_center = [18, 19, 20, 21, 26, 29, 34, 37, 42, 43, 44, 45]
+
         for sq in center_squares:
-            # Attaques
             if self.board.is_attacked_by(WHITE, sq):
-                score += 5
+                score += 10   # doublé (était 5)
             if self.board.is_attacked_by(BLACK, sq):
-                score -= 5
-            
-            # Occupation
+                score -= 10
             piece = self.board.piece_at(sq)
             if piece:
                 if piece.color == WHITE:
-                    score += 10
+                    score += 20   # doublé (était 10)
                 else:
-                    score -= 10
-        
+                    score -= 20
+
+        for sq in extended_center:
+            if self.board.is_attacked_by(WHITE, sq):
+                score += 3
+            if self.board.is_attacked_by(BLACK, sq):
+                score -= 3
+
         return score
 
     def _evaluate_mobility_fast(self):
         """Mobilité - point de vue BLANCS"""
         white_attacks = 0
         black_attacks = 0
-        
+
         for piece_type in [QUEEN, ROOK, BISHOP, KNIGHT]:
             for sq in self.board.pieces(piece_type, WHITE):
                 attacks = len(list(self.board.attacks(sq)))
                 white_attacks += attacks
-            
+
             for sq in self.board.pieces(piece_type, BLACK):
                 attacks = len(list(self.board.attacks(sq)))
                 black_attacks += attacks
-        
-        return (white_attacks - black_attacks) * 2
+
+        return (white_attacks - black_attacks) * 3   # augmenté (était 2)
 
     def _evaluate_king_safety(self):
         """Sécurité du roi - point de vue BLANCS"""
@@ -477,6 +492,116 @@ class TreeIA:
         return score
 
     # ==============================================================
+    #   NOUVEAUTÉ: Reconnaissance tactique
+    # ==============================================================
+
+    def _evaluate_tactics(self):
+        """
+        Détecte patterns tactiques - point de vue BLANCS.
+        - Pièces non défendues (hanging)
+        - Tour sur 7e rangée
+        - Cavalier sur avant-poste
+        """
+        score = 0
+
+        # ----------------------------------------------------------
+        # 1. Pièces non défendues (hanging pieces)
+        # ----------------------------------------------------------
+        for color, sign in [(WHITE, 1), (BLACK, -1)]:
+            opponent = not color
+            for pt in [QUEEN, ROOK, BISHOP, KNIGHT]:
+                for sq in self.board.pieces(pt, color):
+                    # Pièce non défendue par des alliés
+                    if not self.board.is_attacked_by(color, sq):
+                        piece_val = PIECE_VALUES[pt]
+                        # Si en plus attaquée par l'adversaire → danger immédiat
+                        if self.board.is_attacked_by(opponent, sq):
+                            score -= sign * (piece_val // 2)  # forte pénalité
+                        else:
+                            score -= sign * (piece_val // 8)  # pénalité légère
+
+        # ----------------------------------------------------------
+        # 2. Tour sur la 7e rangée (très forte en fin de partie)
+        # ----------------------------------------------------------
+        for sq in self.board.pieces(ROOK, WHITE):
+            if sq // 8 == 6:  # rangée 7 pour les Blancs (index 48-55)
+                score += 50
+        for sq in self.board.pieces(ROOK, BLACK):
+            if sq // 8 == 1:  # rangée 2 pour les Noirs (index 8-15)
+                score -= 50
+
+        # ----------------------------------------------------------
+        # 3. Cavalier sur avant-poste (case avancée non attaquable par pion)
+        # ----------------------------------------------------------
+        for sq in self.board.pieces(KNIGHT, WHITE):
+            rank = sq // 8
+            file = sq % 8
+            if rank >= 4:  # Cavalier avancé (rangée 5+)
+                # Vérifier que pas attaquable par pion noir
+                can_be_attacked = False
+                for r in [rank + 1]:
+                    if r < 8:
+                        for f in [file - 1, file + 1]:
+                            if 0 <= f < 8:
+                                p = self.board.piece_at(r * 8 + f)
+                                if p and p.piece_type == PAWN and p.color == BLACK:
+                                    can_be_attacked = True
+                if not can_be_attacked:
+                    score += 20  # Avant-poste blanc
+
+        for sq in self.board.pieces(KNIGHT, BLACK):
+            rank = sq // 8
+            file = sq % 8
+            if rank <= 3:  # Cavalier avancé pour les Noirs
+                can_be_attacked = False
+                for r in [rank - 1]:
+                    if r >= 0:
+                        for f in [file - 1, file + 1]:
+                            if 0 <= f < 8:
+                                p = self.board.piece_at(r * 8 + f)
+                                if p and p.piece_type == PAWN and p.color == WHITE:
+                                    can_be_attacked = True
+                if not can_be_attacked:
+                    score -= 20  # Avant-poste noir
+
+        return score
+
+    # ==============================================================
+    #   NOUVEAUTÉ: SEE (Static Exchange Evaluation)
+    # ==============================================================
+
+    def see(self, to_sq, attacker_color):
+        """
+        SEE simplifié : estime si une capture sur to_sq est profitable.
+        Retourne le gain estimé (positif = bon pour attacker_color).
+        """
+        target = self.board.piece_at(to_sq)
+        if target is None:
+            return 0
+
+        gain = PIECE_VALUES[target.piece_type]
+        defender_color = not attacker_color
+
+        # Si la case n'est pas défendue, capture libre
+        if not self.board.is_attacked_by(defender_color, to_sq):
+            return gain
+
+        # La case est défendue : trouver l'attaquant le moins précieux
+        min_attacker_value = None
+        for pt in [PAWN, KNIGHT, BISHOP, ROOK, QUEEN]:
+            for sq in self.board.pieces(pt, attacker_color):
+                if to_sq in self.board.attacks(sq):
+                    val = PIECE_VALUES[pt]
+                    if min_attacker_value is None or val < min_attacker_value:
+                        min_attacker_value = val
+
+        if min_attacker_value is None:
+            return 0  # Pas d'attaquant
+
+        # Gain net = valeur capturée - valeur de notre attaquant (pire cas)
+        return gain - min_attacker_value
+
+    # ==============================================================
     #   NOUVEAUTÉ 3 & 4: Ordre des coups avec Killers + History
     # ==============================================================
 
@@ -512,16 +637,19 @@ class TreeIA:
                 continue
 
             # ==============================================================
-            #   PRIORITÉ 2: Captures (MVV-LVA)
+            #   PRIORITÉ 2: Captures avec SEE (MVV-LVA + filtre gains/pertes)
             # ==============================================================
             if self.board.is_capture(move):
                 target = self.board.piece_at(move.to_square)
                 attacker = self.board.piece_at(move.from_square)
-                if target:
-                    # Score TRÈS élevé pour les captures
-                    score += PIECE_VALUES[target.piece_type] * 100
-                    if attacker:
-                        score -= PIECE_VALUES[attacker.piece_type] // 10
+                if target and attacker:
+                    see_score = self.see(move.to_square, self.board.turn)
+                    if see_score >= 0:
+                        # Capture gagnante ou neutre : haute priorité
+                        score += 500000 + see_score
+                    else:
+                        # Capture perdante : basse priorité (après coups calmes)
+                        score += see_score  # valeur négative
 
             # Promotions
             if move.promotion:
@@ -838,15 +966,38 @@ class TreeIA:
 
         # Recherche principale
         self.board = board
-        
-        # Réinitialiser les killer moves
         self.killer_moves = [[None, None] for _ in range(64)]
+        self.nodes_searched = 0
+        self._search_start_time = time.time()
+        self._time_exceeded = False
 
         # ==============================================================
-        #   RECHERCHE DIRECTE (sans iterative deepening bugué)
+        #   ITERATIVE DEEPENING + TIME MANAGEMENT
         # ==============================================================
-        score, best_move = self.negamax_root(self.depth)
+        best_move = None
 
+        for d in range(1, self.depth + 1):
+            self._time_exceeded = False
+            score, move = self.negamax_root(d)
+
+            if not self._time_exceeded:
+                # Profondeur terminée complètement : on garde le résultat
+                if move is not None:
+                    best_move = move
+                # Mat trouvé : inutile d'aller plus loin
+                if abs(score) > 90000:
+                    break
+            else:
+                # Temps écoulé en plein milieu d'une profondeur :
+                # on garde best_move de la profondeur précédente (plus fiable)
+                break
+
+            # Vérifie si on a encore le temps pour une profondeur supplémentaire
+            elapsed = time.time() - self._search_start_time
+            if elapsed > self.time_limit * 0.85:
+                break
+
+        # Fallback si aucun coup trouvé (ne devrait pas arriver)
         if best_move is None:
             moves = list(board.legal_moves)
             if moves:
@@ -858,10 +1009,9 @@ class TreeIA:
                         if target:
                             sc = PIECE_VALUES[target.piece_type]
                     move_scores.append((sc, move))
-                
                 move_scores.sort(key=lambda x: x[0], reverse=True)
-                best_score = move_scores[0][0]
-                best_moves = [m for s, m in move_scores if s == best_score]
+                best_score_val = move_scores[0][0]
+                best_moves = [m for s, m in move_scores if s == best_score_val]
                 best_move = random.choice(best_moves)
             else:
                 raise ValueError("Aucun coup trouvé !")
@@ -874,23 +1024,28 @@ class TreeIA:
         beta = 10**9
         best_score = -10**9
         best_move = None
-        
+
         moves = list(self.board.legal_moves)
         if not moves:
             return 0, None
-        
+
         # Ordonner les coups
         moves = self._order_moves(moves, 0)
-        
+
         for move in moves:
             self.board.push(move)
             score = -self.negamax(depth - 1, -beta, -alpha, 1)
             self.board.pop()
-            
+
             if score > best_score:
                 best_score = score
                 best_move = move
-            
+
             alpha = max(alpha, score)
-        
+
+            # Vérifie le temps après chaque coup à la racine
+            if time.time() - self._search_start_time > self.time_limit:
+                self._time_exceeded = True
+                break
+
         return best_score, best_move
