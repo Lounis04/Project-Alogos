@@ -955,6 +955,35 @@ class TreeIA:
     #                           COUP
     # ==============================================================
 
+    def _smart_promotion(self, board, move):
+        """
+        Si le coup choisi est une promotion en dame qui crée un pat,
+        essaie tour puis cavalier puis fou à la place.
+        Dans tous les autres cas, retourne le coup inchangé.
+        """
+        if move.promotion != QUEEN:
+            return move
+
+        board.push(move)
+        is_stalemate = board.is_stalemate()
+        board.pop()
+
+        if not is_stalemate:
+            return move
+
+        # La dame crée un pat : chercher une alternative
+        for piece in [ROOK, KNIGHT, BISHOP]:
+            alt = chess.Move(move.from_square, move.to_square, promotion=piece)
+            if alt not in board.legal_moves:
+                continue
+            board.push(alt)
+            still_pat = board.is_stalemate()
+            board.pop()
+            if not still_pat:
+                return alt
+
+        return move  # Aucune alternative, on garde la dame (pat inévitable)
+
     def coup(self, board):
 
         # Ouvertures
@@ -1016,6 +1045,7 @@ class TreeIA:
             else:
                 raise ValueError("Aucun coup trouvé !")
 
+        best_move = self._smart_promotion(board, best_move)
         return board.san(best_move)
     
     def negamax_root(self, depth):
