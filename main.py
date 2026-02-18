@@ -10,7 +10,7 @@ root.title("Echecs")
 ia_blanc = None
 
 #IA
-ia_noir = TreeIA(depth=4, transpo_file="coups.json", train_mode=False)
+ia_noir = TreeIA(depth=6, transpo_file="coups.json", train_mode=False)
 
 c = Chess_UI(root, board, ia_blanc, ia_noir)
 
