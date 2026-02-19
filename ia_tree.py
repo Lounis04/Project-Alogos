@@ -21,43 +21,77 @@ from Ouvertures import OPENING_BOOK
 
 
 PIECE_VALUES = {
-    PAWN: 100,
+    PAWN:   100,
     KNIGHT: 320,
     BISHOP: 330,
-    ROOK: 500,
-    QUEEN: 900,
-    KING: 20000,
+    ROOK:   500,
+    QUEEN:  900,
+    KING:   20000,
 }
 
-# Types de nœuds pour la table de transposition
 EXACT      = 0
 LOWERBOUND = 1
 UPPERBOUND = 2
 
-# Taille maximale de la table de transposition (en nombre d'entrées)
 TT_MAX_SIZE = 500_000
+
+# Futility Pruning
+FUTILITY_MARGINS = {1: 320, 2: 500, 3: 900}
+
+# Delta Pruning (Quiescence)
+DELTA_MARGIN = 200
+
+# Razoring
+RAZORING_MARGIN = 300
+
+# Probcut
+PROBCUT_MARGIN = 100
+
+# Singular Extension
+SINGULAR_MARGIN = 50
+
+# Contempt : valeur d'une nulle pour le camp qui cherche (points)
+CONTEMPT = 25
+
+# Late Move Pruning : nb de coups max à chercher par profondeur
+LMP_COUNTS = {1: 5, 2: 10, 3: 18}
+
+# ──────────────────────────────────────────────────────────────────────
+#  Masques bitboard pour la détection rapide des pions passés
+#  passed_mask_white[sq] = masque des cases devant (rangs sup.) sur
+#  la colonne du pion et les colonnes adjacentes.
+# ──────────────────────────────────────────────────────────────────────
+
+def _build_passed_masks():
+    white_masks = [0] * 64
+    black_masks = [0] * 64
+    for sq in range(64):
+        rank, file = sq // 8, sq % 8
+        # Masque blanc : rangs rank+1 … 7, colonnes file-1 … file+1
+        for r in range(rank + 1, 8):
+            for f in range(max(0, file - 1), min(7, file + 1) + 1):
+                white_masks[sq] |= (1 << (r * 8 + f))
+        # Masque noir : rangs 0 … rank-1
+        for r in range(0, rank):
+            for f in range(max(0, file - 1), min(7, file + 1) + 1):
+                black_masks[sq] |= (1 << (r * 8 + f))
+    return white_masks, black_masks
+
+PASSED_MASK_WHITE, PASSED_MASK_BLACK = _build_passed_masks()
 
 
 class TreeIA:
     def __init__(self, depth=2, transpo_file="coups.json", train_mode=True):
-        self.depth       = depth
+        self.depth        = depth
         self.transpo_file = transpo_file
-        self.train_mode  = train_mode
+        self.train_mode   = train_mode
 
-        # Compteur d'ouverture séparé par couleur pour l'auto-jeu (entraînement).
-        # True = Blancs, False = Noirs  (correspond à chess.WHITE / chess.BLACK)
         self.opening_moves_played = {True: 0, False: 0}
 
-        # ------------------------------------------------------------------
-        #   Table de transposition (en RAM)
-        #   Clés : entiers Zobrist  (int 64-bit)
-        #   Ancien format FEN (chaînes avec '/' ou ' ') → ignoré, repart à zéro.
-        # ------------------------------------------------------------------
         if os.path.exists(transpo_file):
             try:
                 with open(transpo_file, "r") as f:
                     self.transposition_table = json.load(f)
-                # Sanity check : si les valeurs ne sont pas des dicts, on repart à zéro
                 if not isinstance(self.transposition_table, dict):
                     self.transposition_table = {}
             except Exception:
@@ -65,34 +99,25 @@ class TreeIA:
         else:
             self.transposition_table = {}
 
-        # Killer moves (2 par profondeur, jusqu'à 64 niveaux)
-        self.killer_moves = [[None, None] for _ in range(64)]
-
-        # History heuristic
-        self.history = {}
-
-        # Compteur de nœuds (debug)
+        self.killer_moves  = [[None, None] for _ in range(64)]
+        self.history       = {}
+        # Counter-move heuristic : counter_moves[from_sq][to_sq] = chess.Move
+        self.counter_moves = [[None] * 64 for _ in range(64)]
         self.nodes_searched = 0
 
-        # Gestion du temps
         self.time_limit         = 5.0
         self._search_start_time = 0.0
         self._time_exceeded     = False
 
+        # Dernier coup joué par l'adversaire (pour counter-move)
+        self._last_move = None
+
     # ------------------------------------------------------------------
-    #   Clé de transposition (Zobrist ou fallback FEN)
+    #   Clé Zobrist — string JSON-safe
     # ------------------------------------------------------------------
 
     @staticmethod
     def _zobrist(board):
-        """
-        Retourne une STRING unique représentant la position, toujours
-        sérialisable en JSON quelle que soit la version de python-chess.
-        Ordre de préférence :
-          1. board._transposition_key()  → str() (peut être int ou tuple selon version)
-          2. chess.polyglot.zobrist_hash() → str()
-          3. board.fen()  (fallback universel)
-        """
         if hasattr(board, '_transposition_key'):
             return str(board._transposition_key())
         try:
@@ -102,7 +127,7 @@ class TreeIA:
             return board.fen()
 
     # ------------------------------------------------------------------
-    #   Sauvegarde (uniquement en mode entraînement)
+    #   Sauvegarde sur disque
     # ------------------------------------------------------------------
 
     def save_transpo(self):
@@ -114,7 +139,7 @@ class TreeIA:
                 json.dump(self.transposition_table, f, indent=2)
             os.replace(tmp, self.transpo_file)
         except Exception as e:
-            print(f"[save_transpo] Erreur lors de la sauvegarde : {e}")
+            print(f"[save_transpo] Erreur : {e}")
 
     # ==================================================================
     #                           ÉVALUATION
@@ -123,61 +148,36 @@ class TreeIA:
     def evaluate(self):
         """
         Évaluation statique TOUJOURS du point de vue des BLANCS.
-        Score positif  = bon pour les Blancs.
-        Score négatif  = bon pour les Noirs.
-        Negamax gère l'inversion avec  -negamax().
+        Score positif = bon pour les Blancs, négatif = bon pour les Noirs.
         """
         if self.board.is_checkmate():
             return -100_000 if self.board.turn == WHITE else 100_000
-
         if self.board.is_stalemate() or self.board.is_insufficient_material():
             return 0
 
         score = 0
 
-        # ── Matériel ─────────────────────────────────────────────────
         for pt in [PAWN, KNIGHT, BISHOP, ROOK, QUEEN]:
             score += PIECE_VALUES[pt] * (
                 len(self.board.pieces(pt, WHITE))
                 - len(self.board.pieces(pt, BLACK))
             )
 
-        # ── PST Pions ────────────────────────────────────────────────
-        for sq in self.board.pieces(PAWN, WHITE):
-            score += PAWN_TABLE_WHITE[sq]
-        for sq in self.board.pieces(PAWN, BLACK):
-            score -= PAWN_TABLE_BLACK[sq]
+        for sq in self.board.pieces(PAWN, WHITE):   score += PAWN_TABLE_WHITE[sq]
+        for sq in self.board.pieces(PAWN, BLACK):   score -= PAWN_TABLE_BLACK[sq]
+        for sq in self.board.pieces(KNIGHT, WHITE): score += KNIGHT_TABLE[sq]
+        for sq in self.board.pieces(KNIGHT, BLACK): score -= KNIGHT_TABLE[sq ^ 56]
+        for sq in self.board.pieces(BISHOP, WHITE): score += BISHOP_TABLE_WHITE[sq]
+        for sq in self.board.pieces(BISHOP, BLACK): score -= BISHOP_TABLE_BLACK[sq]
 
-        # ── PST Cavaliers ────────────────────────────────────────────
-        for sq in self.board.pieces(KNIGHT, WHITE):
-            score += KNIGHT_TABLE[sq]
-        for sq in self.board.pieces(KNIGHT, BLACK):
-            score -= KNIGHT_TABLE[sq ^ 56]
+        if len(self.board.pieces(BISHOP, WHITE)) >= 2: score += 50
+        if len(self.board.pieces(BISHOP, BLACK)) >= 2: score -= 50
 
-        # ── PST Fous ─────────────────────────────────────────────────
-        for sq in self.board.pieces(BISHOP, WHITE):
-            score += BISHOP_TABLE_WHITE[sq]
-        for sq in self.board.pieces(BISHOP, BLACK):
-            score -= BISHOP_TABLE_BLACK[sq]
+        for sq in self.board.pieces(ROOK, WHITE):  score += ROOK_TABLE_WHITE[sq]
+        for sq in self.board.pieces(ROOK, BLACK):  score -= ROOK_TABLE_BLACK[sq]
+        for sq in self.board.pieces(QUEEN, WHITE): score += QUEEN_TABLE_WHITE[sq]
+        for sq in self.board.pieces(QUEEN, BLACK): score -= QUEEN_TABLE_BLACK[sq]
 
-        if len(self.board.pieces(BISHOP, WHITE)) >= 2:
-            score += 50
-        if len(self.board.pieces(BISHOP, BLACK)) >= 2:
-            score -= 50
-
-        # ── PST Tours ────────────────────────────────────────────────
-        for sq in self.board.pieces(ROOK, WHITE):
-            score += ROOK_TABLE_WHITE[sq]
-        for sq in self.board.pieces(ROOK, BLACK):
-            score -= ROOK_TABLE_BLACK[sq]
-
-        # ── PST Reines ───────────────────────────────────────────────
-        for sq in self.board.pieces(QUEEN, WHITE):
-            score += QUEEN_TABLE_WHITE[sq]
-        for sq in self.board.pieces(QUEEN, BLACK):
-            score -= QUEEN_TABLE_BLACK[sq]
-
-        # ── Roi (milieu / finale) ────────────────────────────────────
         wking = self.board.king(WHITE)
         bking = self.board.king(BLACK)
 
@@ -196,7 +196,6 @@ class TreeIA:
             score += KING_MG_TABLE_WHITE[wking]
             score -= KING_MG_TABLE_BLACK[bking]
 
-        # ── Évaluations thématiques ──────────────────────────────────
         score += self._evaluate_rook_placement()
         score += self._evaluate_pawn_structure()
         score += self._evaluate_center_control()
@@ -209,9 +208,10 @@ class TreeIA:
             score += self._evaluate_castling_rights()
 
         score += self._evaluate_tactics()
+        score += self._evaluate_king_exposure()
+        score += self._evaluate_pins()
 
-        # ── Bonus de simplification ──────────────────────────────────
-        # Le camp avantagé (> 200 points) préfère échanger pour simplifier.
+        # Bonus de simplification
         material_balance = sum(
             PIECE_VALUES[pt] * (
                 len(self.board.pieces(pt, WHITE)) - len(self.board.pieces(pt, BLACK))
@@ -230,154 +230,199 @@ class TreeIA:
     # ------------------------------------------------------------------
 
     def _evaluate_castling_rights(self):
-        """Bonus pour droits de roque – point de vue BLANCS."""
         score = 0
-
-        if self.board.has_kingside_castling_rights(WHITE):
-            score += 15
-        if self.board.has_queenside_castling_rights(WHITE):
-            score += 10
-        if self.board.has_kingside_castling_rights(BLACK):
-            score -= 15
-        if self.board.has_queenside_castling_rights(BLACK):
-            score -= 10
-
-        white_king_sq = self.board.king(WHITE)
-        black_king_sq = self.board.king(BLACK)
-
-        if white_king_sq in [6, 2]:    # g1 ou c1
-            score += 30
-        if black_king_sq in [62, 58]:  # g8 ou c8
-            score -= 30
-
+        if self.board.has_kingside_castling_rights(WHITE):  score += 15
+        if self.board.has_queenside_castling_rights(WHITE): score += 10
+        if self.board.has_kingside_castling_rights(BLACK):  score -= 15
+        if self.board.has_queenside_castling_rights(BLACK): score -= 10
+        wk = self.board.king(WHITE)
+        bk = self.board.king(BLACK)
+        if wk in [6, 2]:    score += 30
+        if bk in [62, 58]:  score -= 30
         return score
 
     def _evaluate_endgame_king_activity(self):
-        """Roi actif en finale – point de vue BLANCS."""
         score = 0
-
-        white_king = self.board.king(WHITE)
-        black_king = self.board.king(BLACK)
+        wk = self.board.king(WHITE)
+        bk = self.board.king(BLACK)
 
         center = 3.5
-        white_dist = abs(white_king % 8 - center) + abs(white_king // 8 - center)
-        black_dist = abs(black_king % 8 - center) + abs(black_king // 8 - center)
-        score += int((black_dist - white_dist) * 15)
+        wd = abs(wk % 8 - center) + abs(wk // 8 - center)
+        bd = abs(bk % 8 - center) + abs(bk // 8 - center)
+        score += int((bd - wd) * 15)
 
-        white_pieces = sum(len(self.board.pieces(pt, WHITE)) for pt in [KNIGHT, BISHOP, ROOK, QUEEN])
-        black_pieces = sum(len(self.board.pieces(pt, BLACK)) for pt in [KNIGHT, BISHOP, ROOK, QUEEN])
+        wp = sum(len(self.board.pieces(pt, WHITE)) for pt in [KNIGHT, BISHOP, ROOK, QUEEN])
+        bp = sum(len(self.board.pieces(pt, BLACK)) for pt in [KNIGHT, BISHOP, ROOK, QUEEN])
 
-        if white_pieces == 0 and black_pieces == 0:
-            black_edge = min(black_king % 8, 7 - black_king % 8,
-                             black_king // 8, 7 - black_king // 8)
-            white_edge = min(white_king % 8, 7 - white_king % 8,
-                             white_king // 8, 7 - white_king // 8)
-            score -= black_edge * 5
-            score += white_edge * 5
+        if wp == 0 and bp == 0:
+            be = min(bk % 8, 7 - bk % 8, bk // 8, 7 - bk // 8)
+            we = min(wk % 8, 7 - wk % 8, wk // 8, 7 - wk // 8)
+            score -= be * 5
+            score += we * 5
+
+        wr, wf = wk // 8, wk % 8
+        br, bf = bk // 8, bk % 8
+
+        direct_opp = ((wr == br and abs(wf - bf) == 2)
+                      or (wf == bf and abs(wr - br) == 2))
+        dist_opp = (abs(wf - bf) % 2 == 0
+                    and abs(wr - br) % 2 == 0
+                    and abs(wf - bf) + abs(wr - br) > 2)
+
+        if direct_opp:
+            if self.board.turn == BLACK:
+                score += 30
+            else:
+                score -= 30
+        elif dist_opp:
+            if self.board.turn == BLACK:
+                score += 15
+            else:
+                score -= 15
+
+        # Carré du pion passé (via bitboards)
+        black_pawn_bb = int(self.board.pieces(PAWN, BLACK))
+        white_pawn_bb = int(self.board.pieces(PAWN, WHITE))
+
+        for sq in self.board.pieces(PAWN, WHITE):
+            if PASSED_MASK_WHITE[sq] & black_pawn_bb:
+                continue  # pas passé
+            rank, file = sq // 8, sq % 8
+            steps     = 7 - rank
+            bk_r, bk_f = bk // 8, bk % 8
+            king_dist = max(abs(bk_r - 7), abs(bk_f - file))
+            extra     = 0 if self.board.turn == WHITE else 1
+            if king_dist > steps + extra:
+                score += 200
+
+        for sq in self.board.pieces(PAWN, BLACK):
+            if PASSED_MASK_BLACK[sq] & white_pawn_bb:
+                continue
+            rank, file = sq // 8, sq % 8
+            steps     = rank
+            wk_r, wk_f = wk // 8, wk % 8
+            king_dist = max(abs(wk_r - 0), abs(wk_f - file))
+            extra     = 0 if self.board.turn == BLACK else 1
+            if king_dist > steps + extra:
+                score -= 200
+
+        # Cases clés devant les pions passés avancés
+        for sq in self.board.pieces(PAWN, WHITE):
+            file, rank = sq % 8, sq // 8
+            if rank < 4:
+                continue
+            if PASSED_MASK_WHITE[sq] & black_pawn_bb:
+                continue
+            key_rank = min(7, rank + 2)
+            for kf in [file - 1, file, file + 1]:
+                if 0 <= kf < 8 and wk == key_rank * 8 + kf:
+                    score += 50
+
+        for sq in self.board.pieces(PAWN, BLACK):
+            file, rank = sq % 8, sq // 8
+            if rank > 3:
+                continue
+            if PASSED_MASK_BLACK[sq] & white_pawn_bb:
+                continue
+            key_rank = max(0, rank - 2)
+            for kf in [file - 1, file, file + 1]:
+                if 0 <= kf < 8 and bk == key_rank * 8 + kf:
+                    score -= 50
 
         return score
 
     def _evaluate_rook_placement(self):
-        """Tours sur colonnes ouvertes – point de vue BLANCS."""
         score = 0
-
         for rook_sq in self.board.pieces(ROOK, WHITE):
             file = rook_sq % 8
-            is_open = is_semi_open = True
+            is_open = is_semi = True
             for rank in range(8):
-                piece = self.board.piece_at(rank * 8 + file)
-                if piece and piece.piece_type == PAWN:
+                p = self.board.piece_at(rank * 8 + file)
+                if p and p.piece_type == PAWN:
                     is_open = False
-                    if piece.color == WHITE:
-                        is_semi_open = False
-            score += 40 if is_open else (20 if is_semi_open else 0)
+                    if p.color == WHITE: is_semi = False
+            score += 40 if is_open else (20 if is_semi else 0)
 
         for rook_sq in self.board.pieces(ROOK, BLACK):
             file = rook_sq % 8
-            is_open = is_semi_open = True
+            is_open = is_semi = True
             for rank in range(8):
-                piece = self.board.piece_at(rank * 8 + file)
-                if piece and piece.piece_type == PAWN:
+                p = self.board.piece_at(rank * 8 + file)
+                if p and p.piece_type == PAWN:
                     is_open = False
-                    if piece.color == BLACK:
-                        is_semi_open = False
-            score -= 40 if is_open else (20 if is_semi_open else 0)
+                    if p.color == BLACK: is_semi = False
+            score -= 40 if is_open else (20 if is_semi else 0)
 
         return score
 
     def _evaluate_pawn_structure(self):
-        """Structure des pions – point de vue BLANCS."""
         score = 0
+        white_pawns  = list(self.board.pieces(PAWN, WHITE))
+        black_pawns  = list(self.board.pieces(PAWN, BLACK))
+        white_set    = set(white_pawns)
+        black_set    = set(black_pawns)
+        white_pawn_bb = int(self.board.pieces(PAWN, WHITE))
+        black_pawn_bb = int(self.board.pieces(PAWN, BLACK))
 
-        white_pawns = list(self.board.pieces(PAWN, WHITE))
-        black_pawns = list(self.board.pieces(PAWN, BLACK))
-
-        # ── Pions doublés ─────────────────────────────────────────────
+        # Pions doublés
         wfiles = [sq % 8 for sq in white_pawns]
         bfiles = [sq % 8 for sq in black_pawns]
         for file in range(8):
-            wc = wfiles.count(file)
-            bc = bfiles.count(file)
-            if wc > 1:
-                score -= 15 * (wc - 1)
-            if bc > 1:
-                score += 15 * (bc - 1)
+            wc, bc = wfiles.count(file), bfiles.count(file)
+            if wc > 1: score -= 15 * (wc - 1)
+            if bc > 1: score += 15 * (bc - 1)
 
-        # ── Pions isolés ──────────────────────────────────────────────
+        # Pions isolés
         for sq in white_pawns:
             file = sq % 8
-            if not any(p % 8 in (file - 1, file + 1) for p in white_pawns if 0 <= p % 8 < 8):
+            if not any(p % 8 in (file - 1, file + 1)
+                       for p in white_pawns if 0 <= p % 8 < 8):
                 score -= 20
         for sq in black_pawns:
             file = sq % 8
-            if not any(p % 8 in (file - 1, file + 1) for p in black_pawns if 0 <= p % 8 < 8):
+            if not any(p % 8 in (file - 1, file + 1)
+                       for p in black_pawns if 0 <= p % 8 < 8):
                 score += 20
 
-        # ── Pions passés ─────────────────────────────────────────────
+        # Pions passés (via bitboards rapides)
         for sq in white_pawns:
-            file, rank = sq % 8, sq // 8
-            passed = True
-            for r in range(rank + 1, 8):
-                for f in [file - 1, file, file + 1]:
-                    if 0 <= f < 8:
-                        p = self.board.piece_at(r * 8 + f)
-                        if p and p.piece_type == PAWN and p.color == BLACK:
-                            passed = False
-                            break
-                if not passed:
-                    break
-            if passed:
-                score += 30 + rank * 10
+            if not (PASSED_MASK_WHITE[sq] & black_pawn_bb):
+                rank = sq // 8
+                bonus = 30 + rank * 10
+
+                # ── NOUVEAU : pion passé soutenu ─────────────────────
+                file = sq % 8
+                for f in [file - 1, file + 1]:
+                    if 0 <= f < 8 and (rank - 1) * 8 + f in white_set:
+                        bonus += 40
+                        break
+
+                score += bonus
 
         for sq in black_pawns:
-            file, rank = sq % 8, sq // 8
-            passed = True
-            for r in range(0, rank):
-                for f in [file - 1, file, file + 1]:
-                    if 0 <= f < 8:
-                        p = self.board.piece_at(r * 8 + f)
-                        if p and p.piece_type == PAWN and p.color == WHITE:
-                            passed = False
-                            break
-                if not passed:
-                    break
-            if passed:
-                score -= 30 + (7 - rank) * 10
+            if not (PASSED_MASK_BLACK[sq] & white_pawn_bb):
+                rank = sq // 8
+                bonus = 30 + (7 - rank) * 10
 
-        # ── Pions arriérés – Blancs ───────────────────────────────────
+                # ── NOUVEAU : pion passé soutenu ─────────────────────
+                file = sq % 8
+                for f in [file - 1, file + 1]:
+                    if 0 <= f < 8 and (rank + 1) * 8 + f in black_set:
+                        bonus += 40
+                        break
+
+                score -= bonus
+
+        # Pions arriérés – Blancs
         for sq in white_pawns:
             file, rank = sq % 8, sq // 8
-            # Bloqué par un pion adverse devant ?
             blocked = False
             for r in range(rank + 1, 8):
                 p = self.board.piece_at(r * 8 + file)
                 if p and p.piece_type == PAWN:
-                    if p.color == BLACK:
-                        blocked = True
+                    if p.color == BLACK: blocked = True
                     break
-            if not blocked:
-                continue
-            # Aucun pion ami en soutien derrière ?
+            if not blocked: continue
             supported = False
             for nf in [file - 1, file + 1]:
                 if 0 <= nf < 8:
@@ -386,23 +431,19 @@ class TreeIA:
                         if p and p.piece_type == PAWN and p.color == WHITE:
                             supported = True
                             break
-                if supported:
-                    break
-            if not supported:
-                score -= 15
+                if supported: break
+            if not supported: score -= 15
 
-        # ── Pions arriérés – Noirs ────────────────────────────────────
+        # Pions arriérés – Noirs
         for sq in black_pawns:
             file, rank = sq % 8, sq // 8
             blocked = False
             for r in range(rank - 1, -1, -1):
                 p = self.board.piece_at(r * 8 + file)
                 if p and p.piece_type == PAWN:
-                    if p.color == WHITE:
-                        blocked = True
+                    if p.color == WHITE: blocked = True
                     break
-            if not blocked:
-                continue
+            if not blocked: continue
             supported = False
             for nf in [file - 1, file + 1]:
                 if 0 <= nf < 8:
@@ -411,65 +452,107 @@ class TreeIA:
                         if p and p.piece_type == PAWN and p.color == BLACK:
                             supported = True
                             break
-                if supported:
-                    break
-            if not supported:
-                score += 15
+                if supported: break
+            if not supported: score += 15
+
+        # Pions connectés – Blancs
+        for sq in white_pawns:
+            rank, file = sq // 8, sq % 8
+            if rank > 0:
+                for f in [file - 1, file + 1]:
+                    if 0 <= f < 8 and (rank - 1) * 8 + f in white_set:
+                        score += 10 + rank * 2
+                        break
+
+        # Pions connectés – Noirs
+        for sq in black_pawns:
+            rank, file = sq // 8, sq % 8
+            if rank < 7:
+                for f in [file - 1, file + 1]:
+                    if 0 <= f < 8 and (rank + 1) * 8 + f in black_set:
+                        score -= 10 + (7 - rank) * 2
+                        break
+
+        # Pions passés candidats – Blancs
+        for sq in white_pawns:
+            file, rank = sq % 8, sq // 8
+            if not (PASSED_MASK_WHITE[sq] & black_pawn_bb):
+                continue  # déjà passé
+            is_candidate = True
+            has_blocker  = False
+            for f in [file - 1, file, file + 1]:
+                if 0 <= f < 8:
+                    w_ahead = sum(1 for p_sq in white_pawns
+                                  if p_sq % 8 == f and p_sq // 8 > rank)
+                    b_ahead = sum(1 for p_sq in black_pawns
+                                  if p_sq % 8 == f and p_sq // 8 > rank)
+                    if b_ahead > 0:
+                        has_blocker = True
+                    if b_ahead > w_ahead:
+                        is_candidate = False
+                        break
+            if is_candidate and has_blocker:
+                score += 10 + rank * 3
+
+        # Pions passés candidats – Noirs
+        for sq in black_pawns:
+            file, rank = sq % 8, sq // 8
+            if not (PASSED_MASK_BLACK[sq] & white_pawn_bb):
+                continue
+            is_candidate = True
+            has_blocker  = False
+            for f in [file - 1, file, file + 1]:
+                if 0 <= f < 8:
+                    w_behind = sum(1 for p_sq in white_pawns
+                                   if p_sq % 8 == f and p_sq // 8 < rank)
+                    b_behind = sum(1 for p_sq in black_pawns
+                                   if p_sq % 8 == f and p_sq // 8 < rank)
+                    if w_behind > 0:
+                        has_blocker = True
+                    if w_behind > b_behind:
+                        is_candidate = False
+                        break
+            if is_candidate and has_blocker:
+                score -= 10 + (7 - rank) * 3
 
         return score
 
     def _evaluate_center_control(self):
-        """Contrôle du centre – point de vue BLANCS."""
-        score = 0
+        score  = 0
         center   = [27, 28, 35, 36]
         extended = [18, 19, 20, 21, 26, 29, 34, 37, 42, 43, 44, 45]
-
         for sq in center:
-            if self.board.is_attacked_by(WHITE, sq):
-                score += 10
-            if self.board.is_attacked_by(BLACK, sq):
-                score -= 10
-            piece = self.board.piece_at(sq)
-            if piece:
-                score += 20 if piece.color == WHITE else -20
-
+            if self.board.is_attacked_by(WHITE, sq): score += 10
+            if self.board.is_attacked_by(BLACK, sq): score -= 10
+            p = self.board.piece_at(sq)
+            if p: score += 20 if p.color == WHITE else -20
         for sq in extended:
-            if self.board.is_attacked_by(WHITE, sq):
-                score += 3
-            if self.board.is_attacked_by(BLACK, sq):
-                score -= 3
-
+            if self.board.is_attacked_by(WHITE, sq): score += 3
+            if self.board.is_attacked_by(BLACK, sq): score -= 3
         return score
 
     def _evaluate_mobility_fast(self):
-        """Mobilité – point de vue BLANCS."""
-        white_attacks = sum(
+        wa = sum(
             len(list(self.board.attacks(sq)))
             for pt in [QUEEN, ROOK, BISHOP, KNIGHT]
             for sq in self.board.pieces(pt, WHITE)
         )
-        black_attacks = sum(
+        ba = sum(
             len(list(self.board.attacks(sq)))
             for pt in [QUEEN, ROOK, BISHOP, KNIGHT]
             for sq in self.board.pieces(pt, BLACK)
         )
-        return (white_attacks - black_attacks) * 3
+        return (wa - ba) * 3
 
     def _evaluate_king_safety(self):
-        """Sécurité du roi – point de vue BLANCS."""
         score = 0
 
-        # Roi blanc
         wk = self.board.king(WHITE)
         if wk is not None:
-            # Pièces noires adjacentes au roi blanc
             attackers = 0
             for sq in chess.SquareSet(chess.BB_KING_ATTACKS[wk]):
                 p = self.board.piece_at(sq)
-                if p and p.color == BLACK:
-                    attackers += 1
-
-            # Bouclier de pions
+                if p and p.color == BLACK: attackers += 1
             file, rank = wk % 8, wk // 8
             shield_ranks = [rank + 1, rank + 2] if rank < 6 else [rank - 1]
             pawn_shield = 0
@@ -480,24 +563,18 @@ class TreeIA:
                             p = self.board.piece_at(r * 8 + f)
                             if p and p.piece_type == PAWN and p.color == WHITE:
                                 pawn_shield += 1
-
-            # Cases faibles autour du roi
-            weak = 0
-            for sq in chess.SquareSet(chess.BB_KING_ATTACKS[wk]):
-                if not self.board.is_attacked_by(WHITE, sq):
-                    weak += 1
-
+            weak = sum(
+                1 for sq in chess.SquareSet(chess.BB_KING_ATTACKS[wk])
+                if not self.board.is_attacked_by(WHITE, sq)
+            )
             score += -25 * attackers + 12 * pawn_shield - 8 * weak
 
-        # Roi noir
         bk = self.board.king(BLACK)
         if bk is not None:
             attackers = 0
             for sq in chess.SquareSet(chess.BB_KING_ATTACKS[bk]):
                 p = self.board.piece_at(sq)
-                if p and p.color == WHITE:
-                    attackers += 1
-
+                if p and p.color == WHITE: attackers += 1
             file, rank = bk % 8, bk // 8
             shield_ranks = [rank - 1, rank - 2] if rank > 1 else [rank + 1]
             pawn_shield = 0
@@ -508,27 +585,17 @@ class TreeIA:
                             p = self.board.piece_at(r * 8 + f)
                             if p and p.piece_type == PAWN and p.color == BLACK:
                                 pawn_shield += 1
-
-            weak = 0
-            for sq in chess.SquareSet(chess.BB_KING_ATTACKS[bk]):
-                if not self.board.is_attacked_by(BLACK, sq):
-                    weak += 1
-
+            weak = sum(
+                1 for sq in chess.SquareSet(chess.BB_KING_ATTACKS[bk])
+                if not self.board.is_attacked_by(BLACK, sq)
+            )
             score -= -25 * attackers + 12 * pawn_shield - 8 * weak
 
         return score
 
     def _evaluate_tactics(self):
-        """
-        Reconnaît les patterns tactiques – point de vue BLANCS.
-        - Pièces non défendues (hanging)
-        - Tour sur 7e rangée
-        - Cavalier sur avant-poste
-        - Fou actif sur grande diagonale
-        """
         score = 0
 
-        # ── Pièces non défendues (hanging) ───────────────────────────
         for color, sign in [(WHITE, 1), (BLACK, -1)]:
             opponent = not color
             for pt in [QUEEN, ROOK, BISHOP, KNIGHT]:
@@ -540,70 +607,96 @@ class TreeIA:
                         else:
                             score -= sign * (val // 8)
 
-        # ── Tour sur la 7e rangée ─────────────────────────────────────
         for sq in self.board.pieces(ROOK, WHITE):
-            if sq // 8 == 6:
-                score += 50
+            if sq // 8 == 6: score += 50
         for sq in self.board.pieces(ROOK, BLACK):
-            if sq // 8 == 1:
-                score -= 50
+            if sq // 8 == 1: score -= 50
 
-        # ── Cavalier sur avant-poste ──────────────────────────────────
         for sq in self.board.pieces(KNIGHT, WHITE):
             rank, file = sq // 8, sq % 8
             if rank >= 4:
                 threatened = False
-                if rank + 1 < 8:                       # garde indispensable (rank 7 → rank+1=8 hors limites)
+                if rank + 1 < 8:
                     for f in [file - 1, file + 1]:
                         if 0 <= f < 8:
                             p = self.board.piece_at((rank + 1) * 8 + f)
                             if p and p.piece_type == PAWN and p.color == BLACK:
                                 threatened = True
                                 break
-                if not threatened:
-                    score += 20
+                if not threatened: score += 20
 
         for sq in self.board.pieces(KNIGHT, BLACK):
             rank, file = sq // 8, sq % 8
             if rank <= 3:
                 threatened = False
-                if rank - 1 >= 0:                      # garde indispensable (rank 0 → rank-1=-1 hors limites)
+                if rank - 1 >= 0:
                     for f in [file - 1, file + 1]:
                         if 0 <= f < 8:
                             p = self.board.piece_at((rank - 1) * 8 + f)
                             if p and p.piece_type == PAWN and p.color == WHITE:
                                 threatened = True
                                 break
-                if not threatened:
-                    score -= 20
+                if not threatened: score -= 20
 
-        # ── Fou actif sur grande diagonale ────────────────────────────
         for sq in self.board.pieces(BISHOP, WHITE):
-            if len(list(self.board.attacks(sq))) >= 6:
-                score += 15
+            if len(list(self.board.attacks(sq))) >= 6: score += 15
         for sq in self.board.pieces(BISHOP, BLACK):
-            if len(list(self.board.attacks(sq))) >= 6:
-                score -= 15
+            if len(list(self.board.attacks(sq))) >= 6: score -= 15
 
         return score
 
+    def _evaluate_king_exposure(self):
+        score = 0
+        white_pawns = list(self.board.pieces(PAWN, WHITE))
+        black_pawns = list(self.board.pieces(PAWN, BLACK))
+
+        bk = self.board.king(BLACK)
+        if bk is not None:
+            bk_file = bk % 8
+            if not any(sq % 8 == bk_file for sq in black_pawns):
+                heavy = sum(
+                    1 for pt in [ROOK, QUEEN]
+                    for sq in self.board.pieces(pt, WHITE)
+                    if sq % 8 == bk_file
+                )
+                if heavy > 0:
+                    score += 25 * heavy
+
+        wk = self.board.king(WHITE)
+        if wk is not None:
+            wk_file = wk % 8
+            if not any(sq % 8 == wk_file for sq in white_pawns):
+                heavy = sum(
+                    1 for pt in [ROOK, QUEEN]
+                    for sq in self.board.pieces(pt, BLACK)
+                    if sq % 8 == wk_file
+                )
+                if heavy > 0:
+                    score -= 25 * heavy
+
+        return score
+
+    def _evaluate_pins(self):
+        score = 0
+        for pt in [KNIGHT, BISHOP, ROOK, QUEEN]:
+            for sq in self.board.pieces(pt, WHITE):
+                if self.board.is_pinned(WHITE, sq):
+                    score -= PIECE_VALUES[pt] // 8
+            for sq in self.board.pieces(pt, BLACK):
+                if self.board.is_pinned(BLACK, sq):
+                    score += PIECE_VALUES[pt] // 8
+        return score
+
     # ==================================================================
-    #   SEE récursif complet (Static Exchange Evaluation)
+    #   SEE récursif complet
     # ==================================================================
 
     def see(self, to_sq, attacker_color):
-        """
-        SEE récursif complet avec minimax rétrograde.
-        Retourne le gain net pour attacker_color
-        (négatif = mauvaise capture).
-        Note : n'inclut pas les attaques en rayon X (simplification acceptable).
-        """
         target = self.board.piece_at(to_sq)
         if target is None:
             return 0
 
         def collect_sorted(color):
-            """Valeurs des attaquants de 'color' sur to_sq, triées croissant."""
             vals = []
             for pt in [PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING]:
                 for sq in self.board.pieces(pt, color):
@@ -612,28 +705,25 @@ class TreeIA:
             vals.sort()
             return vals
 
-        atk = collect_sorted(attacker_color)
+        atk  = collect_sorted(attacker_color)
         if not atk:
             return 0
 
-        def_ = collect_sorted(not attacker_color)
+        def_  = collect_sorted(not attacker_color)
+        gain  = []
+        cap   = PIECE_VALUES[target.piece_type]
+        sides = [atk, def_]
+        side  = 0
 
-        # Simuler la séquence de captures (toujours avec la pièce la moins chère)
-        gain = []
-        captured_val = PIECE_VALUES[target.piece_type]
-        side_lists   = [atk, def_]
-        side         = 0
-
-        while side_lists[side]:
-            piece_val = side_lists[side].pop(0)
-            gain.append(captured_val)
-            captured_val = piece_val
+        while sides[side]:
+            pv = sides[side].pop(0)
+            gain.append(cap)
+            cap   = pv
             side ^= 1
 
         if not gain:
             return 0
 
-        # Minimax rétrograde : chaque joueur peut refuser de capturer si perdant
         for d in range(len(gain) - 1, 0, -1):
             gain[d - 1] = gain[d - 1] - max(0, gain[d])
 
@@ -643,75 +733,61 @@ class TreeIA:
     #   Ordonnancement des coups
     # ==================================================================
 
-    def _order_moves(self, moves, depth):
-        """
-        Priorité :
-          1. Coup de la table de transposition
-          2. Captures (SEE + MVV-LVA)
-          3. Promotions
-          4. Killer moves
-          5. History heuristic
-          6. Coups vers le centre / échecs
-        """
-        scored = []
-
-        # Coup TT via clé Zobrist
-        zobrist_key = self._zobrist(self.board)
+    def _order_moves(self, moves, depth, prev_move=None):
+        scored  = []
+        zkey    = self._zobrist(self.board)
         tt_move = None
-        if zobrist_key in self.transposition_table:
+        if zkey in self.transposition_table:
             try:
-                tt_move = chess.Move.from_uci(self.transposition_table[zobrist_key]["best_move"])
+                tt_move = chess.Move.from_uci(
+                    self.transposition_table[zkey]["best_move"])
             except Exception:
                 pass
+
+        # Counter-move du coup précédent adversaire
+        counter_move = None
+        if prev_move is not None:
+            counter_move = self.counter_moves[prev_move.from_square][prev_move.to_square]
 
         for move in moves:
             score = 0
 
-            # Priorité 1 : coup TT
             if tt_move and move == tt_move:
                 scored.append((1_000_000, move))
                 continue
 
-            # Priorité 2 : captures (SEE)
             if self.board.is_capture(move):
                 target   = self.board.piece_at(move.to_square)
                 attacker = self.board.piece_at(move.from_square)
                 if target and attacker:
-                    see_score = self.see(move.to_square, self.board.turn)
-                    score += (500_000 + see_score) if see_score >= 0 else see_score
+                    ss = self.see(move.to_square, self.board.turn)
+                    score += (500_000 + ss) if ss >= 0 else ss
 
-            # Promotions
             if move.promotion:
                 score += 900 if move.promotion == QUEEN else 300
 
-            # Priorité 3 : killer moves
             if depth < 64:
-                if move == self.killer_moves[depth][0]:
-                    score += 1_000
-                elif move == self.killer_moves[depth][1]:
-                    score += 800
+                if move == self.killer_moves[depth][0]:   score += 1_000
+                elif move == self.killer_moves[depth][1]: score += 800
 
-            # Priorité 4 : history heuristic
-            move_key = move.uci()
-            if move_key in self.history:
-                score += self.history[move_key]
+            # ── Counter-move heuristic ──────────────────────────────
+            if counter_move is not None and move == counter_move:
+                score += 600
 
-            # Bonus échec
+            mk = move.uci()
+            if mk in self.history:
+                score += self.history[mk]
+
             self.board.push(move)
-            if self.board.is_check():
-                score += 50
+            if self.board.is_check(): score += 50
             self.board.pop()
 
-            # Bonus centre
-            if move.to_square in (27, 28, 35, 36):
-                score += 10
+            if move.to_square in (27, 28, 35, 36): score += 10
 
             scored.append((score, move))
 
         scored.sort(key=lambda x: x[0], reverse=True)
         return [m for _, m in scored]
-
-    # ------------------------------------------------------------------
 
     def _update_killers(self, move, depth):
         if depth >= 64:
@@ -721,12 +797,16 @@ class TreeIA:
             self.killer_moves[depth][0] = move
 
     def _update_history(self, move, depth):
-        move_key = move.uci()
-        bonus = depth * depth
-        self.history[move_key] = self.history.get(move_key, 0) + bonus
+        key = move.uci()
+        self.history[key] = self.history.get(key, 0) + depth * depth
+
+    def _update_counter_move(self, prev_move, move):
+        """Mémorise 'move' comme meilleure réponse à 'prev_move'."""
+        if prev_move is not None:
+            self.counter_moves[prev_move.from_square][prev_move.to_square] = move
 
     # ==================================================================
-    #   Quiescence Search
+    #   Quiescence Search + Delta Pruning
     # ==================================================================
 
     def quiescence(self, alpha, beta):
@@ -734,12 +814,11 @@ class TreeIA:
         if self.board.turn == BLACK:
             stand_pat = -stand_pat
 
-        if stand_pat >= beta:
-            return beta
-        if alpha < stand_pat:
-            alpha = stand_pat
+        if stand_pat >= beta: return beta
+        if stand_pat > alpha: alpha = stand_pat
 
-        capture_moves = [m for m in self.board.legal_moves if self.board.is_capture(m)]
+        capture_moves = [m for m in self.board.legal_moves
+                         if self.board.is_capture(m)]
         capture_moves.sort(
             key=lambda m: PIECE_VALUES.get(
                 self.board.piece_at(m.to_square).piece_type, 0
@@ -748,14 +827,20 @@ class TreeIA:
         )
 
         for move in capture_moves:
+            target = self.board.piece_at(move.to_square)
+            if target:
+                gain = PIECE_VALUES.get(target.piece_type, 0)
+                if move.promotion == QUEEN:
+                    gain += PIECE_VALUES[QUEEN] - PIECE_VALUES[PAWN]
+                if stand_pat + gain + DELTA_MARGIN <= alpha:
+                    continue
+
             self.board.push(move)
             score = -self.quiescence(-beta, -alpha)
             self.board.pop()
 
-            if score >= beta:
-                return beta
-            if score > alpha:
-                alpha = score
+            if score >= beta: return beta
+            if score > alpha: alpha = score
 
         return alpha
 
@@ -766,111 +851,208 @@ class TreeIA:
     def _try_null_move(self, depth, beta, ply):
         if depth < 3 or self.board.is_check():
             return None
-
         non_pawn = sum(
             len(self.board.pieces(pt, self.board.turn))
             for pt in [KNIGHT, BISHOP, ROOK, QUEEN]
         )
         if non_pawn == 0:
             return None
-
         self.board.push(chess.Move.null())
-        R     = 2
-        score = -self.negamax(depth - 1 - R, -beta, -beta + 1, ply + 1)
+        score = -self.negamax(depth - 1 - 2, -beta, -beta + 1, ply + 1, None)
         self.board.pop()
-
         return beta if score >= beta else None
 
     # ==================================================================
     #   Negamax principal
     # ==================================================================
 
-    def negamax(self, depth, alpha, beta, ply):
+    def negamax(self, depth, alpha, beta, ply, prev_move=None):
         self.nodes_searched += 1
 
-        # Répétition de position
         if self.board.is_repetition(2):
+            # ── Contempt factor ──────────────────────────────────────
+            # Si on est en avantage, une nulle vaut moins que 0
+            contempt_sign = 1 if self.board.turn == WHITE else -1
+            return -CONTEMPT * contempt_sign
+
+        # Règle des 50 coups
+        if self.board.halfmove_clock >= 100:
             return 0
 
-        # Table de transposition (clé Zobrist)
-        zobrist_key = self._zobrist(self.board)
-        alpha_orig  = alpha
+        # Table de transposition
+        zkey       = self._zobrist(self.board)
+        alpha_orig = alpha
 
-        if zobrist_key in self.transposition_table:
-            entry = self.transposition_table[zobrist_key]
+        if zkey in self.transposition_table:
+            entry = self.transposition_table[zkey]
             if entry["depth"] >= depth:
                 flag  = entry.get("flag", EXACT)
                 score = entry["score"]
-
                 if flag == EXACT:
                     return score
                 elif flag == LOWERBOUND:
                     alpha = max(alpha, score)
                 elif flag == UPPERBOUND:
-                    beta = min(beta, score)
-
+                    beta  = min(beta,  score)
                 if alpha >= beta:
                     return score
 
-        # Extension en cas d'échec
         in_check = self.board.is_check()
-        if depth == 0 and in_check:
-            depth = 1
 
-        # Feuille
-        if depth == 0:
+        if in_check and ply < 2 * self.depth + 4:
+            depth += 1
+
+        if depth <= 0:
             if self.board.is_game_over():
-                score = self.evaluate()
-                return score if self.board.turn == WHITE else -score
+                s = self.evaluate()
+                return s if self.board.turn == WHITE else -s
             return self.quiescence(alpha, beta)
 
-        # Fin de partie
         if self.board.is_game_over():
             if self.board.is_checkmate():
                 return -100_000 + ply
             return 0
 
-        # Null move pruning
-        if not in_check and depth >= 3:
-            null_result = self._try_null_move(depth, beta, ply)
-            if null_result is not None:
-                return null_result
+        # Razoring
+        if (depth == 1
+                and not in_check
+                and abs(alpha) < 90_000):
+            se = self.evaluate()
+            if self.board.turn == BLACK:
+                se = -se
+            if se < alpha - RAZORING_MARGIN:
+                return self.quiescence(alpha, beta)
 
-        # Génération et ordonnancement des coups
+        # Null Move Pruning
+        if not in_check and depth >= 3:
+            nr = self._try_null_move(depth, beta, ply)
+            if nr is not None:
+                return nr
+
         moves = list(self.board.legal_moves)
         if not moves:
             return 0
-        moves = self._order_moves(moves, ply)
+        moves = self._order_moves(moves, ply, prev_move)
 
-        best_move  = moves[0]
-        best_score = -10**9
+        # Internal Iterative Deepening (IID)
+        if (depth >= 4
+                and not in_check
+                and zkey not in self.transposition_table):
+            self.negamax(depth - 2, alpha, beta, ply, prev_move)
+            moves = self._order_moves(moves, ply, prev_move)
+
+        # Probcut
+        if (depth >= 5
+                and not in_check
+                and abs(beta) < 90_000):
+            pc_beta      = beta + PROBCUT_MARGIN
+            pc_static    = self.evaluate()
+            if self.board.turn == BLACK:
+                pc_static = -pc_static
+            pc_threshold = pc_beta - pc_static
+            pc_moves     = [m for m in moves
+                            if self.board.is_capture(m)
+                            and self.see(m.to_square, self.board.turn) >= pc_threshold]
+            for m in pc_moves[:3]:
+                self.board.push(m)
+                pc_score = -self.negamax(max(1, depth - 4), -pc_beta, -pc_beta + 1, ply + 1, m)
+                self.board.pop()
+                if pc_score >= pc_beta:
+                    return pc_beta
+
+        # Singular Extension
+        singular_move = None
+        if (depth >= 4
+                and not in_check
+                and zkey in self.transposition_table):
+            tt_e = self.transposition_table[zkey]
+            if (tt_e.get("depth", 0) >= depth - 3
+                    and tt_e.get("flag", EXACT) != UPPERBOUND
+                    and abs(tt_e.get("score", 0)) < 90_000):
+                try:
+                    cand = chess.Move.from_uci(tt_e["best_move"])
+                    if cand in moves:
+                        s_beta  = tt_e["score"] - SINGULAR_MARGIN
+                        s_depth = min(depth // 2, 3)
+                        s_fails = False
+                        checked = 0
+                        for m in moves:
+                            if m == cand or checked >= 6:
+                                continue
+                            checked += 1
+                            self.board.push(m)
+                            s_val = -self.negamax(s_depth, -s_beta, -(s_beta - 1), ply + 1, cand)
+                            self.board.pop()
+                            if s_val >= s_beta:
+                                s_fails = True
+                                break
+                        if not s_fails:
+                            singular_move = cand
+                except Exception:
+                    pass
+
+        # Futility Pruning
+        futility_pruning = False
+        if (depth in FUTILITY_MARGINS
+                and not in_check
+                and abs(alpha) < 90_000
+                and abs(beta)  < 90_000):
+            fe = self.evaluate()
+            if self.board.turn == BLACK:
+                fe = -fe
+            if fe + FUTILITY_MARGINS[depth] <= alpha:
+                futility_pruning = True
+
+        # Boucle principale
+        best_move      = moves[0]
+        best_score     = -10**9
         moves_searched = 0
+        quiet_count    = 0   # Pour LMP
 
         for move in moves:
-            is_capture = self.board.is_capture(move)
+            is_capture   = self.board.is_capture(move)
+            is_promotion = bool(move.promotion)
+            is_quiet     = not is_capture and not is_promotion
+
+            # Futility : ignorer les coups calmes sauf le premier
+            if futility_pruning and is_quiet and moves_searched > 0:
+                continue
+
+            # ── Late Move Pruning (LMP) ──────────────────────────────
+            # À faible profondeur, on coupe les coups calmes tardifs
+            if (depth in LMP_COUNTS
+                    and is_quiet
+                    and not in_check
+                    and moves_searched > 0):
+                if quiet_count >= LMP_COUNTS[depth]:
+                    continue
+
+            if is_quiet:
+                quiet_count += 1
+
             self.board.push(move)
 
             if moves_searched == 0:
-                # Premier coup : recherche complète
-                score = -self.negamax(depth - 1, -beta, -alpha, ply + 1)
+                ext = 1 if (singular_move is not None and move == singular_move) else 0
+                score = -self.negamax(depth - 1 + ext, -beta, -alpha, ply + 1, move)
             else:
-                # Late Move Reduction logarithmique
                 reduction = 0
                 if (depth >= 3 and moves_searched >= 4
                         and not in_check
                         and not is_capture
                         and not self.board.is_check()):
-                    reduction = max(1, int(math.log(depth) * math.log(moves_searched) / 1.5))
+                    reduction = max(1, int(
+                        math.log(depth) * math.log(moves_searched) / 1.5))
 
-                # Recherche réduite avec fenêtre nulle
-                score = -self.negamax(depth - 1 - reduction, -alpha - 1, -alpha, ply + 1)
+                score = -self.negamax(
+                    depth - 1 - reduction, -alpha - 1, -alpha, ply + 1, move)
 
-                # Re-chercher si le coup semble intéressant
                 if score > alpha and score < beta:
                     if reduction > 0:
-                        score = -self.negamax(depth - 1, -alpha - 1, -alpha, ply + 1)
+                        score = -self.negamax(
+                            depth - 1, -alpha - 1, -alpha, ply + 1, move)
                     if score > alpha:
-                        score = -self.negamax(depth - 1, -beta, -alpha, ply + 1)
+                        score = -self.negamax(depth - 1, -beta, -alpha, ply + 1, move)
 
             self.board.pop()
             moves_searched += 1
@@ -885,31 +1067,30 @@ class TreeIA:
                 if not is_capture:
                     self._update_killers(move, ply)
                     self._update_history(move, depth)
+                    # ── Counter-move update ──────────────────────────
+                    if prev_move is not None:
+                        self._update_counter_move(prev_move, move)
                 break
 
-        # Sauvegarde en table de transposition (mode entraînement)
-        if self.train_mode:
-            flag = EXACT
-            if best_score <= alpha_orig:
-                flag = UPPERBOUND
-            elif best_score >= beta:
-                flag = LOWERBOUND
+        # Sauvegarde TT
+        flag = EXACT
+        if best_score <= alpha_orig: flag = UPPERBOUND
+        elif best_score >= beta:     flag = LOWERBOUND
 
-            # Éviction si la table est trop grande (supprimer ~10% des moins profondes)
-            if len(self.transposition_table) >= TT_MAX_SIZE:
-                to_delete = sorted(
-                    self.transposition_table.keys(),
-                    key=lambda k: self.transposition_table[k].get("depth", 0)
-                )[:TT_MAX_SIZE // 10]
-                for k in to_delete:
-                    del self.transposition_table[k]
+        if len(self.transposition_table) >= TT_MAX_SIZE:
+            to_delete = sorted(
+                self.transposition_table.keys(),
+                key=lambda k: self.transposition_table[k].get("depth", 0)
+            )[:TT_MAX_SIZE // 10]
+            for k in to_delete:
+                del self.transposition_table[k]
 
-            self.transposition_table[zobrist_key] = {
-                "best_move": best_move.uci(),
-                "score":     best_score,
-                "depth":     depth,
-                "flag":      flag,
-            }
+        self.transposition_table[zkey] = {
+            "best_move": best_move.uci(),
+            "score":     best_score,
+            "depth":     depth,
+            "flag":      flag,
+        }
 
         return best_score
 
@@ -928,72 +1109,89 @@ class TreeIA:
     # ==================================================================
 
     def _smart_promotion(self, board, move):
-        """
-        Si la promotion en dame choisie par la recherche crée un pat,
-        essaie tour, cavalier, fou dans cet ordre.
-        Retourne le coup inchangé dans tous les autres cas.
-        """
         if move.promotion != QUEEN:
             return move
-
         board.push(move)
-        is_stalemate = board.is_stalemate()
+        is_pat = board.is_stalemate()
         board.pop()
-
-        if not is_stalemate:
+        if not is_pat:
             return move
-
         for piece in [ROOK, KNIGHT, BISHOP]:
             alt = chess.Move(move.from_square, move.to_square, promotion=piece)
-            if alt not in board.legal_moves:
-                continue
+            if alt not in board.legal_moves: continue
             board.push(alt)
             still_pat = board.is_stalemate()
             board.pop()
-            if not still_pat:
-                return alt
-
-        return move  # Pat inévitable, on garde la dame
+            if not still_pat: return alt
+        return move
 
     # ==================================================================
     #   Point d'entrée principal
     # ==================================================================
 
     def coup(self, board):
-        # ── Livre d'ouvertures (compteur par couleur) ────────────────
+        # Livre d'ouvertures
         color = board.turn
         if self.opening_moves_played[color] < 12:
             mv = self.get_opening_move(board)
             if mv:
                 self.opening_moves_played[color] += 1
+                if isinstance(mv, str):
+                    mv = board.parse_san(mv)
                 return mv
 
-        # ── Initialisation de la recherche ───────────────────────────
+        # ── Détection de mat en 1 ─────────────────────────────────────
+        # CORRECTION : retourne chess.Move (pas une SAN string)
+        for mv in board.legal_moves:
+            board.push(mv)
+            is_mate = board.is_checkmate()
+            board.pop()
+            if is_mate:
+                return mv  # ← chess.Move cohérent avec le reste
+
+        # Initialisation
         self.board              = board
         self.killer_moves       = [[None, None] for _ in range(64)]
         self.nodes_searched     = 0
         self._search_start_time = time.time()
         self._time_exceeded     = False
 
+        # History Aging
+        for key in self.history:
+            self.history[key] //= 2
+
         best_move  = None
         prev_score = 0
 
-        # ── Iterative Deepening + Aspiration Windows ─────────────────
+        # Iterative Deepening + Aspiration Windows
         for d in range(1, self.depth + 1):
             self._time_exceeded = False
 
             if d >= 2 and best_move is not None:
-                # Fenêtre d'aspiration autour du score précédent
-                window = 50
-                a = prev_score - window
-                b = prev_score + window
-                score, move = self.negamax_root(d, a, b)
+                delta = 50
+                a = prev_score - delta
+                b = prev_score + delta
 
-                if not self._time_exceeded:
-                    # Fail-low ou fail-high → re-cherche avec fenêtre complète
-                    if move is None or score <= a or score >= b:
+                while True:
+                    self._time_exceeded = False
+                    score, move = self.negamax_root(d, a, b)
+
+                    if self._time_exceeded:
+                        break
+
+                    if score <= a:
+                        a      = max(-10**9, a - delta)
+                        delta  = min(delta * 2, 500)   # ← progressif, pas *3
+                    elif score >= b:
+                        b      = min(10**9, b + delta)
+                        delta  = min(delta * 2, 500)
+                    else:
+                        break
+
+                    if delta > 2_000:
                         self._time_exceeded = False
                         score, move = self.negamax_root(d)
+                        break
             else:
                 score, move = self.negamax_root(d)
 
@@ -1009,34 +1207,31 @@ class TreeIA:
             if time.time() - self._search_start_time > self.time_limit * 0.85:
                 break
 
-        # ── Fallback (ne devrait pas se produire) ────────────────────
+        # Fallback
         if best_move is None:
             moves = list(board.legal_moves)
             if moves:
-                move_scores = []
+                ms = []
                 for mv in moves:
                     sc = 0
                     if board.is_capture(mv):
-                        target = board.piece_at(mv.to_square)
-                        if target:
-                            sc = PIECE_VALUES[target.piece_type]
-                    move_scores.append((sc, mv))
-                move_scores.sort(key=lambda x: x[0], reverse=True)
-                best_val  = move_scores[0][0]
-                best_move = random.choice([m for s, m in move_scores if s == best_val])
+                        t = board.piece_at(mv.to_square)
+                        if t: sc = PIECE_VALUES[t.piece_type]
+                    ms.append((sc, mv))
+                ms.sort(key=lambda x: x[0], reverse=True)
+                bv = ms[0][0]
+                best_move = random.choice([m for s, m in ms if s == bv])
             else:
                 raise ValueError("Aucun coup légal trouvé !")
 
-        # ── Promotion anti-pat ────────────────────────────────────────
         best_move = self._smart_promotion(board, best_move)
-        return board.san(best_move)
+        return best_move  # ← toujours chess.Move
 
     # ==================================================================
     #   Negamax racine
     # ==================================================================
 
     def negamax_root(self, depth, alpha=-10**9, beta=10**9):
-        """Negamax à la racine – retourne (score, meilleur_coup)."""
         best_score = -10**9
         best_move  = None
 
@@ -1044,11 +1239,11 @@ class TreeIA:
         if not moves:
             return 0, None
 
-        moves = self._order_moves(moves, 0)
+        moves = self._order_moves(moves, 0, self._last_move)
 
         for move in moves:
             self.board.push(move)
-            score = -self.negamax(depth - 1, -beta, -alpha, 1)
+            score = -self.negamax(depth - 1, -beta, -alpha, 1, move)
             self.board.pop()
 
             if score > best_score:

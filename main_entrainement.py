@@ -7,7 +7,7 @@ import shutil
 from multiprocessing import Pool, cpu_count
 from ia_tree import TreeIA
 
-TOTAL_GAMES = 10
+TOTAL_GAMES = 2
 DEPTH = 3
 
 PER_PROCESS_PREFIX = "coups_"
@@ -18,7 +18,6 @@ def play_one_game(game_id):
     pid = os.getpid()
     transpo_file = f"{PER_PROCESS_PREFIX}{pid}.json"
 
-    # Si coups.json existe, on le copie comme base
     if os.path.exists(FINAL_FILE):
         shutil.copy(FINAL_FILE, transpo_file)
 
@@ -29,8 +28,8 @@ def play_one_game(game_id):
 
     try:
         while not board.is_game_over():
-            move_san = ia.coup(board)
-            board.push_san(move_san)
+            move = ia.coup(board)
+            board.push(move)  # ← corrigé : coup() retourne chess.Move, pas une SAN
             moves += 1
     except Exception as e:
         ia.save_transpo()
@@ -61,20 +60,18 @@ def merge_all(pattern=f"{PER_PROCESS_PREFIX}*.json", output=FINAL_FILE):
                     if entry["score"] > merged[fen]["score"]:
                         merged[fen] = entry
 
-    # écriture
     tmp = output + ".tmp"
     with open(tmp, "w") as f:
         json.dump(merged, f, indent=2)
     os.replace(tmp, output)
 
-    # on supprime les fichiers temporaires
     for fp in files:
         try:
             os.remove(fp)
         except:
             pass
 
-    print(f"[✓] Fusion terminée : {len(merged)} positions → {output}")
+    print(f"Fusion terminée : {len(merged)} positions → {output}")
 
 
 def train_parallel():
