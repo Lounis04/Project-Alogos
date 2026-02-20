@@ -4,6 +4,7 @@ import os
 import random
 import time
 import chess
+
 import chess.polyglot
 
 from chess import PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING, WHITE, BLACK
@@ -89,7 +90,7 @@ class TreeIA:
     @staticmethod
     def _zobrist(board):
         try:
-            return str(chess.polyglot.zobrist_hash(board))
+            return int(chess.polyglot.zobrist_hash(board))
         except Exception:
             return board.fen()
 
@@ -204,7 +205,7 @@ class TreeIA:
         center = 3.5
         wd = abs((wk & 7) - center) + abs((wk >> 3) - center)
         bd = abs((bk & 7) - center) + abs((bk >> 3) - center)
-        score += int((bd - wd) * 15)
+        score += int((bd - wd) * 25)
 
         # KK : éloigner le roi perdant du bord
         if not (b.occupied_co[WHITE] & ~b.pawns & ~b.kings) and \
@@ -297,6 +298,10 @@ class TreeIA:
             if not (PASSED_MASK_WHITE[sq] & bpbb):
                 rank, file = sq >> 3, sq & 7
                 bonus = 30 + rank * 10
+                bk = self.board.king(BLACK)    # Distance du roi noir
+                if bk is not None:
+                    dist = abs((bk & 7) - file) + abs((bk >> 3) - rank)
+                    bonus += dist * 3
                 for f in (file - 1, file + 1):
                     if 0 <= f < 8 and (rank - 1) * 8 + f in wp_set:
                         bonus += 40; break
@@ -306,6 +311,10 @@ class TreeIA:
             if not (PASSED_MASK_BLACK[sq] & wpbb):
                 rank, file = sq >> 3, sq & 7
                 bonus = 30 + (7 - rank) * 10
+                wk = self.board.king(WHITE)
+                if wk is not None:
+                    dist = abs((wk & 7) - file) + abs((wk >> 3) - rank)
+                    bonus += dist * 3
                 for f in (file - 1, file + 1):
                     if 0 <= f < 8 and (rank + 1) * 8 + f in bp_set:
                         bonus += 40; break
@@ -515,6 +524,41 @@ class TreeIA:
     #   SEE
     # ==================================================================
 
+    def _solve_kpk(self):
+        b = self.board
+
+        pieces = b.piece_map()
+        if len(pieces) != 3:
+            return None
+
+        pawns = list(b.pieces(PAWN, WHITE)) + list(b.pieces(PAWN, BLACK))
+        if len(pawns) != 1:
+            return None
+
+        pawn_sq = pawns[0]
+        pawn_color = b.color_at(pawn_sq)
+
+        wk = b.king(WHITE)
+        bk = b.king(BLACK)
+
+        # Règle du carré simplifiée
+        rank = pawn_sq >> 3
+        file = pawn_sq & 7
+
+        if pawn_color == WHITE:
+            steps = 7 - rank
+            dist = max(abs((bk >> 3) - 7), abs((bk & 7) - file))
+            if dist > steps:
+                return 100000
+        else:
+            steps = rank
+            dist = max(abs((wk >> 3) - 0), abs((wk & 7) - file))
+            if dist > steps:
+                return -100000
+
+        return None
+    
+
     def see(self, to_sq, attacker_color):
         target = self.board.piece_at(to_sq)
         if target is None:
@@ -654,7 +698,7 @@ class TreeIA:
 
     def _try_null_move(self, depth, beta, ply):
         b = self.board
-        if depth < 3 or b.is_check():
+        if depth < 3 or b.is_check() or len(b.piece_map()) <= 8:
             return None
         if not (b.occupied_co[b.turn] & ~b.pawns & ~b.kings):
             return None
@@ -668,8 +712,18 @@ class TreeIA:
     # ==================================================================
 
     def negamax(self, depth, alpha, beta, ply, prev_move=None):
+        if self._time_exceeded:
+            return 0
+        if time.time() - self._search_start_time > self.time_limit:
+            self._time_exceeded = True
+            return 0
         self.nodes_searched += 1
         b = self.board
+
+        # ── Solveur KPK ────────────────────────────
+        kpk_score = self._solve_kpk()
+        if kpk_score is not None:
+            return kpk_score - ply
 
         if b.is_repetition(2):
             return -CONTEMPT
@@ -894,7 +948,16 @@ class TreeIA:
 
         best_move = prev_score = None
 
-        for d in range(1, self.depth + 1):
+        # ── Depth adaptatif en finale ─────────────────────────
+        piece_count = len(board.piece_map())
+        if piece_count <= 8 :
+            effective_depth = self.depth + 1 
+        elif piece_count <= 5 :
+            effective_depth = self.depth + 2 
+        else :                 
+            effective_depth = self.depth
+
+        for d in range(1, effective_depth + 1):
             self._time_exceeded = False
 
             if d >= 2 and best_move is not None:
