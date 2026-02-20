@@ -161,11 +161,11 @@ class Chess_UI:
         if self.board.turn == WHITE:
             if self.human_white:
                 return
-            self.board.push_san(self.Joueur_Blanc.coup(self.board))
+            self.board.push(self.Joueur_Blanc.coup(self.board))
 
         else:
             if self.human_black:
                 return
-            self.board.push_san(self.Joueur_Noir.coup(self.board))
+            self.board.push(self.Joueur_Noir.coup(self.board))
 
         self.update_board()
