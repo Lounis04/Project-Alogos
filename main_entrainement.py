@@ -8,7 +8,7 @@ from multiprocessing import Pool, cpu_count
 from ia_tree import TreeIA
 
 TOTAL_GAMES = 2
-DEPTH = 3
+DEPTH = 6
 
 PER_PROCESS_PREFIX = "coups_"
 FINAL_FILE = "coups.json"
@@ -29,7 +29,7 @@ def play_one_game(game_id):
     try:
         while not board.is_game_over():
             move = ia.coup(board)
-            board.push(move)  # ← corrigé : coup() retourne chess.Move, pas une SAN
+            board.push(move)
             moves += 1
     except Exception as e:
         ia.save_transpo()
