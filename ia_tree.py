@@ -3,10 +3,10 @@ import math
 import os
 import random
 import time
+from collections import Counter
+
 import chess
-
 import chess.polyglot
-
 from chess import PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING, WHITE, BLACK
 
 from PST import (
@@ -18,10 +18,8 @@ from PST import (
     KING_MG_TABLE_WHITE, KING_MG_TABLE_BLACK,
     KING_EG_TABLE_WHITE, KING_EG_TABLE_BLACK,
 )
-
 from Ouvertures import OPENING_BOOK
 
-# ── Valeurs des pièces ───────────────────────────────────────────────
 PIECE_VALUES = {PAWN: 100, KNIGHT: 320, BISHOP: 330,
                 ROOK: 500,  QUEEN:  900, KING:  20000}
 
@@ -29,16 +27,31 @@ EXACT      = 0
 LOWERBOUND = 1
 UPPERBOUND = 2
 
-TT_MAX_SIZE     = 500_000
+TT_MAX_SIZE      = 500_000
 FUTILITY_MARGINS = {1: 320, 2: 500, 3: 900}
-DELTA_MARGIN    = 200
-RAZORING_MARGIN = 300
-PROBCUT_MARGIN  = 100
-SINGULAR_MARGIN = 50
-CONTEMPT        = 25
-LMP_COUNTS      = {1: 5, 2: 10, 3: 18}
+DELTA_MARGIN     = 200
+RAZORING_MARGIN  = 300
+PROBCUT_MARGIN   = 100
+SINGULAR_MARGIN  = 50
+CONTEMPT         = 25
+LMP_COUNTS       = {1: 5, 2: 10, 3: 18}
+MAX_CHECK_EXT    = 6    
 
-# ── Masques bitboard pions passés (pré-calculés au chargement) ───────
+
+def _normalize_fen(fen: str) -> str:
+    parts = fen.split()
+    if len(parts) >= 6:
+        parts[3] = '-'
+    return ' '.join(parts)
+
+
+# Pré-traitement du book : clés normalisées une seule fois au démarrage
+OPENING_BOOK_NORMALIZED: dict[str, list] = {
+    _normalize_fen(k): v for k, v in OPENING_BOOK.items()
+}
+
+
+# Masques bitboard pions passés
 def _build_passed_masks():
     w, b = [0] * 64, [0] * 64
     for sq in range(64):
@@ -53,10 +66,7 @@ def _build_passed_masks():
     return w, b
 
 PASSED_MASK_WHITE, PASSED_MASK_BLACK = _build_passed_masks()
-
-# Masques de colonne (file) pour chaque colonne 0-7
 FILE_MASK = [sum(1 << (r * 8 + f) for r in range(8)) for f in range(8)]
-
 
 class TreeIA:
     def __init__(self, depth=2, transpo_file="coups.json", train_mode=True):
@@ -85,8 +95,7 @@ class TreeIA:
         self._time_exceeded     = False
         self._last_move         = None
 
-    # ── Clé Zobrist ──────────────────────────────────────────────────
-
+    # Clé Zobrist
     @staticmethod
     def _zobrist(board):
         try:
@@ -94,8 +103,7 @@ class TreeIA:
         except Exception:
             return board.fen()
 
-    # ── Sauvegarde disque ────────────────────────────────────────────
-
+    # Sauvegarde disque 
     def save_transpo(self):
         if not self.train_mode:
             return
@@ -107,22 +115,12 @@ class TreeIA:
         except Exception as e:
             print(f"[save_transpo] Erreur : {e}")
 
-    # ==================================================================
-    #                         ÉVALUATION
-    # ==================================================================
-
     def evaluate(self):
         b = self.board
-        if b.is_checkmate():
-            return -100_000 if b.turn == WHITE else 100_000
-        if b.is_stalemate() or b.is_insufficient_material():
-            return 0
-
-        # ── Pièces (cache local pour éviter les appels répétés) ──────
         wp = {pt: b.pieces(pt, WHITE) for pt in range(1, 7)}
         bp = {pt: b.pieces(pt, BLACK) for pt in range(1, 7)}
 
-        # ── Matériel ─────────────────────────────────────────────────
+        # Matériel
         score = 0
         mat_w = mat_b = 0
         for pt in [PAWN, KNIGHT, BISHOP, ROOK, QUEEN]:
@@ -133,11 +131,11 @@ class TreeIA:
                 mat_w += v * nw
                 mat_b += v * nb
 
-        total_material = mat_w + mat_b
-        is_endgame     = total_material < 2600
-        material_balance = score  # valeur avant PST
+        total_material   = mat_w + mat_b
+        is_endgame       = total_material < 2600
+        material_balance = score
 
-        # ── PST ──────────────────────────────────────────────────────
+        # PST
         for sq in wp[PAWN]:   score += PAWN_TABLE_WHITE[sq]
         for sq in bp[PAWN]:   score -= PAWN_TABLE_BLACK[sq]
         for sq in wp[KNIGHT]: score += KNIGHT_TABLE[sq]
@@ -158,7 +156,6 @@ class TreeIA:
         else:
             score += KING_MG_TABLE_WHITE[wking] - KING_MG_TABLE_BLACK[bking]
 
-        # ── Sous-évaluations (données pré-calculées partagées) ───────
         wpbb = int(wp[PAWN])
         bpbb = int(bp[PAWN])
 
@@ -177,14 +174,11 @@ class TreeIA:
         score += self._eval_king_exposure(wp, bp, wking, bking, wpbb, bpbb)
         score += self._eval_pins(wp, bp)
 
-        # ── Bonus de simplification ──────────────────────────────────
         if abs(material_balance) > 200:
             bonus = max(0, (6400 - total_material) // 200)
             score += bonus if material_balance > 200 else -bonus
 
         return score
-
-    # ------------------------------------------------------------------
 
     def _eval_castling(self, wk, bk):
         score = 0
@@ -193,28 +187,25 @@ class TreeIA:
         if b.has_queenside_castling_rights(WHITE): score += 10
         if b.has_kingside_castling_rights(BLACK):  score -= 15
         if b.has_queenside_castling_rights(BLACK): score -= 10
-        if wk in (6, 2):  score += 30
+        if wk in (6, 2):   score += 30
         if bk in (62, 58): score -= 30
         return score
 
     def _eval_endgame_king(self, wk, bk, wpbb, bpbb):
         score = 0
-        b     = self.board
+        b = self.board
 
-        # Centralisation
         center = 3.5
         wd = abs((wk & 7) - center) + abs((wk >> 3) - center)
         bd = abs((bk & 7) - center) + abs((bk >> 3) - center)
         score += int((bd - wd) * 25)
 
-        # KK : éloigner le roi perdant du bord
         if not (b.occupied_co[WHITE] & ~b.pawns & ~b.kings) and \
            not (b.occupied_co[BLACK] & ~b.pawns & ~b.kings):
             be = min(bk & 7, 7 - (bk & 7), bk >> 3, 7 - (bk >> 3))
             we = min(wk & 7, 7 - (wk & 7), wk >> 3, 7 - (wk >> 3))
             score += (we - be) * 5
 
-        # Opposition
         wr, wf = wk >> 3, wk & 7
         br, bf = bk >> 3, bk & 7
         if (wr == br and abs(wf - bf) == 2) or (wf == bf and abs(wr - br) == 2):
@@ -222,7 +213,6 @@ class TreeIA:
         elif abs(wf - bf) % 2 == 0 and abs(wr - br) % 2 == 0 and abs(wf-bf)+abs(wr-br) > 2:
             score += 15 if b.turn == BLACK else -15
 
-        # Carré du pion passé
         extra_w = 0 if b.turn == WHITE else 1
         extra_b = 0 if b.turn == BLACK else 1
         for sq in b.pieces(PAWN, WHITE):
@@ -246,36 +236,32 @@ class TreeIA:
                     for kf in range(max(0, file-1), min(7, file+1)+1):
                         if bk == key_rank * 8 + kf:
                             score -= 50
-
         return score
 
     def _eval_rook_placement(self, wrooks, brooks, wpbb, bpbb):
-        """Bitboards pour détecter colonnes ouvertes/semi-ouvertes."""
         score = 0
         all_pawn_bb = wpbb | bpbb
         for sq in wrooks:
             fm = FILE_MASK[sq & 7]
-            if not (all_pawn_bb & fm):   score += 40
-            elif not (wpbb & fm):        score += 20
+            if not (all_pawn_bb & fm): score += 40
+            elif not (wpbb & fm):      score += 20
         for sq in brooks:
             fm = FILE_MASK[sq & 7]
-            if not (all_pawn_bb & fm):   score -= 40
-            elif not (bpbb & fm):        score -= 20
+            if not (all_pawn_bb & fm): score -= 40
+            elif not (bpbb & fm):      score -= 20
         return score
 
     def _eval_pawn_structure(self, wpawns, bpawns, wpbb, bpbb):
-        score = 0
+        score   = 0
         wp_list = list(wpawns)
         bp_list = list(bpawns)
         wp_set  = set(wp_list)
         bp_set  = set(bp_list)
 
-        # Fichiers occupés (pour pions doublés et isolés en une passe)
         wf_set = set(sq & 7 for sq in wp_list)
         bf_set = set(sq & 7 for sq in bp_list)
-        from collections import Counter
-        wfc = Counter(sq & 7 for sq in wp_list)
-        bfc = Counter(sq & 7 for sq in bp_list)
+        wfc    = Counter(sq & 7 for sq in wp_list)
+        bfc    = Counter(sq & 7 for sq in bp_list)
 
         # Pions doublés
         for f, c in wfc.items():
@@ -283,7 +269,7 @@ class TreeIA:
         for f, c in bfc.items():
             if c > 1: score += 15 * (c - 1)
 
-        # Pions isolés (pas de voisin sur colonne adjacente)
+        # Pions isolés
         for sq in wp_list:
             f = sq & 7
             if (f - 1 not in wf_set) and (f + 1 not in wf_set):
@@ -293,12 +279,14 @@ class TreeIA:
             if (f - 1 not in bf_set) and (f + 1 not in bf_set):
                 score += 20
 
-        # Pions passés
+        bk = self.board.king(BLACK)
+        wk = self.board.king(WHITE)
+
+        # Pions passés blancs
         for sq in wp_list:
             if not (PASSED_MASK_WHITE[sq] & bpbb):
                 rank, file = sq >> 3, sq & 7
                 bonus = 30 + rank * 10
-                bk = self.board.king(BLACK)    # Distance du roi noir
                 if bk is not None:
                     dist = abs((bk & 7) - file) + abs((bk >> 3) - rank)
                     bonus += dist * 3
@@ -307,11 +295,11 @@ class TreeIA:
                         bonus += 40; break
                 score += bonus
 
+        # Pions passés noirs
         for sq in bp_list:
             if not (PASSED_MASK_BLACK[sq] & wpbb):
                 rank, file = sq >> 3, sq & 7
                 bonus = 30 + (7 - rank) * 10
-                wk = self.board.king(WHITE)
                 if wk is not None:
                     dist = abs((wk & 7) - file) + abs((wk >> 3) - rank)
                     bonus += dist * 3
@@ -320,8 +308,9 @@ class TreeIA:
                         bonus += 40; break
                 score -= bonus
 
-        # Pions arriérés
         b = self.board
+
+        # Pions bloqués blancs (pénalité si bloqué par pion noir ET non soutenu)
         for sq in wp_list:
             file, rank = sq & 7, sq >> 3
             blocked = False
@@ -330,17 +319,20 @@ class TreeIA:
                 if p and p.piece_type == PAWN:
                     if p.color == BLACK: blocked = True
                     break
-            if not blocked: continue
-            supported = False
-            for nf in (file - 1, file + 1):
-                if 0 <= nf < 8:
-                    for r in range(rank - 1, 0, -1):
-                        p = b.piece_at(r * 8 + nf)
-                        if p and p.piece_type == PAWN and p.color == WHITE:
-                            supported = True; break
-                if supported: break
-            if not supported: score -= 15
+            if not blocked:
+                continue
+            supported = any(
+                0 <= nf < 8
+                and rank > 0
+                and b.piece_at((rank - 1) * 8 + nf) is not None
+                and b.piece_at((rank - 1) * 8 + nf).piece_type == PAWN
+                and b.piece_at((rank - 1) * 8 + nf).color == WHITE
+                for nf in (file - 1, file + 1)
+            )
+            if not supported:
+                score -= 15
 
+        # Pions bloqués noirs
         for sq in bp_list:
             file, rank = sq & 7, sq >> 3
             blocked = False
@@ -349,55 +341,55 @@ class TreeIA:
                 if p and p.piece_type == PAWN:
                     if p.color == WHITE: blocked = True
                     break
-            if not blocked: continue
-            supported = False
-            for nf in (file - 1, file + 1):
-                if 0 <= nf < 8:
-                    for r in range(rank + 1, 7):
-                        p = b.piece_at(r * 8 + nf)
-                        if p and p.piece_type == PAWN and p.color == BLACK:
-                            supported = True; break
-                if supported: break
-            if not supported: score += 15
+            if not blocked:
+                continue
+            supported = any(
+                0 <= nf < 8
+                and rank < 7
+                and b.piece_at((rank + 1) * 8 + nf) is not None
+                and b.piece_at((rank + 1) * 8 + nf).piece_type == PAWN
+                and b.piece_at((rank + 1) * 8 + nf).color == BLACK
+                for nf in (file - 1, file + 1)
+            )
+            if not supported:
+                score += 15
 
-        # Pions connectés
+        # Chaînes de pions blancs
         for sq in wp_list:
             rank, file = sq >> 3, sq & 7
-            if rank > 0 and any(0 <= f < 8 and (rank-1)*8+f in wp_set
-                                for f in (file-1, file+1)):
+            if rank > 0 and any(
+                0 <= f < 8 and (rank - 1) * 8 + f in wp_set
+                for f in (file - 1, file + 1)
+            ):
                 score += 10 + rank * 2
 
+        # Chaînes de pions noirs
         for sq in bp_list:
             rank, file = sq >> 3, sq & 7
-            if rank < 7 and any(0 <= f < 8 and (rank+1)*8+f in bp_set
-                                for f in (file-1, file+1)):
+            if rank < 7 and any(
+                0 <= f < 8 and (rank + 1) * 8 + f in bp_set
+                for f in (file - 1, file + 1)
+            ):
                 score -= 10 + (7 - rank) * 2
 
-        # Pions passés candidats
         for sq in wp_list:
             file, rank = sq & 7, sq >> 3
             if not (PASSED_MASK_WHITE[sq] & bpbb):
-                continue
-            if all(
-                sum(1 for p in bp_list if p & 7 == f and p >> 3 > rank) <=
-                sum(1 for p in wp_list if p & 7 == f and p >> 3 > rank)
-                for f in range(max(0,file-1), min(7,file+1)+1)
-            ) and any(p & 7 == f and p >> 3 > rank
-                      for f in range(max(0,file-1), min(7,file+1)+1)
-                      for p in bp_list):
+                continue   
+            cols = list(range(max(0, file - 1), min(7, file + 1) + 1))
+            blockers   = sum(1 for p in bp_list if (p & 7) in cols and (p >> 3) > rank)
+            supporters = sum(1 for p in wp_list if (p & 7) in cols and (p >> 3) <= rank and p != sq)
+            if supporters >= blockers:
                 score += 10 + rank * 3
 
         for sq in bp_list:
             file, rank = sq & 7, sq >> 3
             if not (PASSED_MASK_BLACK[sq] & wpbb):
                 continue
-            if all(
-                sum(1 for p in wp_list if p & 7 == f and p >> 3 < rank) <=
-                sum(1 for p in bp_list if p & 7 == f and p >> 3 < rank)
-                for f in range(max(0,file-1), min(7,file+1)+1)
-            ) and any(p & 7 == f and p >> 3 < rank
-                      for f in range(max(0,file-1), min(7,file+1)+1)
-                      for p in wp_list):
+            cols = list(range(max(0, file - 1), min(7, file + 1) + 1))
+            blockers   = sum(1 for p in wp_list if (p & 7) in cols and (p >> 3) < rank)
+            supporters = sum(1 for p in bp_list if (p & 7) in cols and (p >> 3) >= rank and p != sq)
+            if supporters >= blockers:
                 score -= 10 + (7 - rank) * 3
 
         return score
@@ -416,7 +408,6 @@ class TreeIA:
         return score
 
     def _eval_mobility(self, wp, bp):
-        """popcount via bin() — pas de list() intermédiaire."""
         b  = self.board
         wa = sum(bin(int(b.attacks(sq))).count('1')
                  for pt in (QUEEN, ROOK, BISHOP, KNIGHT)
@@ -429,7 +420,6 @@ class TreeIA:
     def _eval_king_safety(self, wp, bp, wk, bk):
         score = 0
         b = self.board
-
         for king, color, sign, shield_dir in (
             (wk, WHITE,  1,  1),
             (bk, BLACK, -1, -1),
@@ -449,15 +439,13 @@ class TreeIA:
             weak = sum(1 for sq in chess.SquareSet(chess.BB_KING_ATTACKS[king])
                        if not b.is_attacked_by(color, sq))
             score += sign * (-25 * attackers + 12 * pawn_shield - 8 * weak)
-
         return score
 
     def _eval_tactics(self, wp, bp):
         score = 0
         b = self.board
-
         for color, sign in ((WHITE, 1), (BLACK, -1)):
-            opp = not color
+            opp    = not color
             pieces = wp if color == WHITE else bp
             for pt in (QUEEN, ROOK, BISHOP, KNIGHT):
                 for sq in pieces[pt]:
@@ -492,7 +480,6 @@ class TreeIA:
             if bin(int(b.attacks(sq))).count('1') >= 6: score += 15
         for sq in bp[BISHOP]:
             if bin(int(b.attacks(sq))).count('1') >= 6: score -= 15
-
         return score
 
     def _eval_king_exposure(self, wp, bp, wk, bk, wpbb, bpbb):
@@ -520,44 +507,36 @@ class TreeIA:
                 if b.is_pinned(BLACK, sq): score += PIECE_VALUES[pt] // 8
         return score
 
-    # ==================================================================
-    #   SEE
-    # ==================================================================
-
-    def _solve_kpk(self):
+    def _solve_kpk(self, ply=0):
         b = self.board
-
         pieces = b.piece_map()
         if len(pieces) != 3:
             return None
-
         pawns = list(b.pieces(PAWN, WHITE)) + list(b.pieces(PAWN, BLACK))
         if len(pawns) != 1:
             return None
-
-        pawn_sq = pawns[0]
+        pawn_sq    = pawns[0]
         pawn_color = b.color_at(pawn_sq)
-
         wk = b.king(WHITE)
         bk = b.king(BLACK)
-
-        # Règle du carré simplifiée
         rank = pawn_sq >> 3
         file = pawn_sq & 7
-
         if pawn_color == WHITE:
             steps = 7 - rank
+            if rank == 1:
+                steps -= 1
             dist = max(abs((bk >> 3) - 7), abs((bk & 7) - file))
-            if dist > steps:
-                return 100000
+            if dist > steps + (1 if b.turn == BLACK else 0):
+                return (100_000 - ply) if b.turn == WHITE else -(100_000 - ply)
         else:
             steps = rank
+            if rank == 6:
+                steps -= 1
             dist = max(abs((wk >> 3) - 0), abs((wk & 7) - file))
-            if dist > steps:
-                return -100000
-
+            if dist > steps + (1 if b.turn == WHITE else 0):
+                # Noirs gagnent : bon si c'est le tour des Noirs, mauvais sinon
+                return (100_000 - ply) if b.turn == BLACK else -(100_000 - ply)
         return None
-    
 
     def see(self, to_sq, attacker_color):
         target = self.board.piece_at(to_sq)
@@ -566,23 +545,26 @@ class TreeIA:
         b = self.board
 
         def collect(color):
-            vals = sorted(
+            return sorted(
                 PIECE_VALUES.get(pt, 20000)
                 for pt in (PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING)
                 for sq in b.pieces(pt, color)
                 if to_sq in b.attacks(sq)
             )
-            return vals
 
-        atk = collect(attacker_color)
+        atk  = collect(attacker_color)
         if not atk:
             return 0
         def_ = collect(not attacker_color)
 
         gain, cap = [], PIECE_VALUES[target.piece_type]
         sides, side = [atk, def_], 0
-        while sides[side]:
-            pv = sides[side].pop(0)
+        ia, id_ = 0, 0   
+        indices = [ia, id_]
+
+        while indices[side] < len(sides[side]):
+            pv = sides[side][indices[side]]
+            indices[side] += 1
             gain.append(cap)
             cap = pv
             side ^= 1
@@ -591,9 +573,8 @@ class TreeIA:
             gain[d-1] -= max(0, gain[d])
         return gain[0] if gain else 0
 
-    # ==================================================================
-    #   Ordonnancement des coups
-    # ==================================================================
+    _CENTER_CORE  = frozenset({27, 28, 35, 36})
+    _CENTER_OUTER = frozenset({18, 19, 20, 21, 26, 29, 34, 37, 42, 43, 44, 45})
 
     def _order_moves(self, moves, depth, prev_move=None):
         b       = self.board
@@ -612,31 +593,32 @@ class TreeIA:
         def _score(move):
             if tt_move and move == tt_move:
                 return 1_000_000
-
             sc = 0
             if b.is_capture(move):
-                target   = b.piece_at(move.to_square)
-                attacker = b.piece_at(move.from_square)
-                if target and attacker:
-                    ss = self.see(move.to_square, b.turn)
-                    sc += (500_000 + ss) if ss >= 0 else ss
 
+                is_ep = b.is_en_passant(move)
+                if is_ep:
+                    sc += 500_000  
+                else:
+                    target   = b.piece_at(move.to_square)
+                    attacker = b.piece_at(move.from_square)
+                    if target and attacker:
+                        ss = self.see(move.to_square, b.turn)
+                        sc += (500_000 + ss) if ss >= 0 else ss
             if move.promotion:
                 sc += 900 if move.promotion == QUEEN else 300
-
             if move == killers[0]:   sc += 1_000
             elif move == killers[1]: sc += 800
-
             if counter_move and move == counter_move:
                 sc += 600
-
             mk = move.uci()
             if mk in self.history:
                 sc += self.history[mk]
-
-            if move.to_square in (27, 28, 35, 36):
-                sc += 10
-
+            # Bonus centre affiné (cases e4/d4/e5/d5 > cases étendues)
+            if move.to_square in self._CENTER_CORE:
+                sc += 15
+            elif move.to_square in self._CENTER_OUTER:
+                sc += 5
             return sc
 
         return sorted(moves, key=_score, reverse=True)
@@ -654,34 +636,53 @@ class TreeIA:
         if prev_move is not None:
             self.counter_moves[prev_move.from_square][prev_move.to_square] = move
 
-    # ==================================================================
-    #   Quiescence
-    # ==================================================================
-
     def quiescence(self, alpha, beta):
         b         = self.board
+        in_check  = b.is_check()
+
         stand_pat = self.evaluate()
         if b.turn == BLACK:
             stand_pat = -stand_pat
 
-        if stand_pat >= beta: return beta
-        if stand_pat > alpha: alpha = stand_pat
+        if not in_check:
+            if stand_pat >= beta: return beta
+            if stand_pat > alpha: alpha = stand_pat
 
-        captures = sorted(
-            (m for m in b.legal_moves if b.is_capture(m)),
-            key=lambda m: PIECE_VALUES.get(
-                b.piece_at(m.to_square).piece_type, 0) if b.piece_at(m.to_square) else 0,
-            reverse=True,
-        )
+        if in_check:
+            legal = list(b.legal_moves)
+            if not legal:
+                return -100_000  
+            for move in legal:
+                b.push(move)
+                score = -self.quiescence(-beta, -alpha)
+                b.pop()
+                if score >= beta: return beta
+                if score > alpha: alpha = score
+            return alpha
 
-        for move in captures:
-            target = b.piece_at(move.to_square)
-            if target:
-                gain = PIECE_VALUES.get(target.piece_type, 0)
-                if move.promotion == QUEEN:
-                    gain += PIECE_VALUES[QUEEN] - PIECE_VALUES[PAWN]
-                if stand_pat + gain + DELTA_MARGIN <= alpha:
-                    continue
+        captures = []
+        for m in b.legal_moves:
+            if not b.is_capture(m):
+                continue
+            if b.is_en_passant(m):
+                captures.append((0, m, PIECE_VALUES[PAWN]))
+                continue
+            target = b.piece_at(m.to_square)
+            if target is None:
+                continue
+            see_val  = self.see(m.to_square, b.turn)
+            gain_val = PIECE_VALUES.get(target.piece_type, 0)
+            if m.promotion == QUEEN:
+                gain_val += PIECE_VALUES[QUEEN] - PIECE_VALUES[PAWN]
+            captures.append((see_val, m, gain_val))
+
+        captures.sort(key=lambda x: x[0], reverse=True)
+
+        for see_val, move, gain in captures:
+            if stand_pat + gain + DELTA_MARGIN <= alpha:
+                continue
+            if see_val < -50:
+                continue
 
             b.push(move)
             score = -self.quiescence(-beta, -alpha)
@@ -691,14 +692,12 @@ class TreeIA:
             if score > alpha: alpha = score
 
         return alpha
-
-    # ==================================================================
-    #   Null Move
-    # ==================================================================
-
+    
     def _try_null_move(self, depth, beta, ply):
         b = self.board
         if depth < 3 or b.is_check() or len(b.piece_map()) <= 8:
+            return None
+        if abs(beta) >= 90_000:
             return None
         if not (b.occupied_co[b.turn] & ~b.pawns & ~b.kings):
             return None
@@ -707,9 +706,16 @@ class TreeIA:
         b.pop()
         return beta if score >= beta else None
 
-    # ==================================================================
-    #   Negamax
-    # ==================================================================
+    def _maybe_evict_tt(self):
+        if len(self.transposition_table) < TT_MAX_SIZE:
+            return
+        keys    = list(self.transposition_table.keys())
+        sample  = random.sample(keys, min(2000, len(keys)))
+        shallow = [k for k in sample
+                   if self.transposition_table[k].get("depth", 0) <= 2]
+        to_del  = shallow[:TT_MAX_SIZE // 10]
+        for k in to_del:
+            del self.transposition_table[k]
 
     def negamax(self, depth, alpha, beta, ply, prev_move=None):
         if self._time_exceeded:
@@ -719,11 +725,9 @@ class TreeIA:
             return 0
         self.nodes_searched += 1
         b = self.board
-
-        # ── Solveur KPK ────────────────────────────
-        kpk_score = self._solve_kpk()
+        kpk_score = self._solve_kpk(ply)
         if kpk_score is not None:
-            return kpk_score - ply
+            return kpk_score
 
         if b.is_repetition(2):
             return -CONTEMPT
@@ -738,19 +742,23 @@ class TreeIA:
             entry = self.transposition_table[zkey]
             if entry["depth"] >= depth:
                 flag, score = entry.get("flag", EXACT), entry["score"]
-                if flag == EXACT:                  return score
-                elif flag == LOWERBOUND: alpha = max(alpha, score)
-                elif flag == UPPERBOUND: beta  = min(beta,  score)
-                if alpha >= beta:                  return score
+                if flag == EXACT:
+                    return score
+                elif flag == LOWERBOUND:
+                    alpha = max(alpha, score)
+                elif flag == UPPERBOUND:
+                    beta  = min(beta,  score)
+                if alpha >= beta:
+                    return score
 
         in_check = b.is_check()
-        if in_check and ply < 2 * self.depth + 4:
+
+        if in_check and ply < 2 * self.depth + MAX_CHECK_EXT:
             depth += 1
 
         if depth <= 0:
             if b.is_game_over():
-                s = self.evaluate()
-                return s if b.turn == WHITE else -s
+                return (-100_000 + ply) if b.is_checkmate() else 0
             return self.quiescence(alpha, beta)
 
         if b.is_game_over():
@@ -773,7 +781,7 @@ class TreeIA:
         if not moves:
             return 0
 
-        # IID
+        # IID : recherche peu profonde pour alimenter le TT
         if depth >= 4 and not in_check and zkey not in self.transposition_table:
             self.negamax(depth - 2, alpha, beta, ply, prev_move)
             moves = self._order_moves(moves, ply, prev_move)
@@ -806,9 +814,10 @@ class TreeIA:
                         s_depth = min(depth // 2, 3)
                         s_fails = False
                         for i, m in enumerate(moves):
-                            if m == cand or i >= 6: continue
+                            if m == cand or i >= 6:
+                                continue
                             b.push(m)
-                            s_val = -self.negamax(s_depth, -s_beta, -(s_beta-1), ply+1, cand)
+                            s_val = -self.negamax(s_depth, -s_beta, -(s_beta-1), ply+1, m)
                             b.pop()
                             if s_val >= s_beta:
                                 s_fails = True; break
@@ -873,12 +882,7 @@ class TreeIA:
                     self._update_counter_move(prev_move, move)
                 break
 
-        # TT eviction : supprime aléatoirement 10% des entrées les moins profondes
-        if len(self.transposition_table) >= TT_MAX_SIZE:
-            shallow = [k for k, v in self.transposition_table.items()
-                       if v.get("depth", 0) <= 2]
-            for k in random.sample(shallow, min(TT_MAX_SIZE // 10, len(shallow))):
-                del self.transposition_table[k]
+        self._maybe_evict_tt()
 
         flag = EXACT
         if best_score <= alpha_orig: flag = UPPERBOUND
@@ -892,12 +896,9 @@ class TreeIA:
         }
         return best_score
 
-    # ==================================================================
-    #   Ouvertures / Promotion / Coup principal
-    # ==================================================================
-
     def get_opening_move(self, board):
-        moves = OPENING_BOOK.get(board.fen())
+        norm  = _normalize_fen(board.fen())
+        moves = OPENING_BOOK_NORMALIZED.get(norm)
         return random.choice(moves) if moves else None
 
     def _smart_promotion(self, board, move):
@@ -910,15 +911,17 @@ class TreeIA:
             return move
         for piece in (ROOK, KNIGHT, BISHOP):
             alt = chess.Move(move.from_square, move.to_square, promotion=piece)
-            if alt not in board.legal_moves: continue
+            if alt not in board.legal_moves:
+                continue
             board.push(alt)
             still = board.is_stalemate()
             board.pop()
-            if not still: return alt
+            if not still:
+                return alt
         return move
 
     def coup(self, board):
-        # Ouvertures
+        # ── Ouvertures ─────────────────────────────────────────────────
         color = board.turn
         if self.opening_moves_played[color] < 12:
             mv = self.get_opening_move(board)
@@ -928,7 +931,7 @@ class TreeIA:
                     mv = board.parse_san(mv)
                 return mv
 
-        # Mat en 1
+        # ── Mat en 1 ────────────────────────────────────────────────────
         for mv in board.legal_moves:
             board.push(mv)
             mate = board.is_checkmate()
@@ -936,25 +939,25 @@ class TreeIA:
             if mate:
                 return mv
 
-        # Initialisation
+        # ── Initialisation ──────────────────────────────────────────────
         self.board              = board
         self.killer_moves       = [[None, None] for _ in range(64)]
         self.nodes_searched     = 0
         self._search_start_time = time.time()
         self._time_exceeded     = False
 
-        for key in self.history:
-            self.history[key] //= 2
+        #History aging via dict comprehension
+        self.history = {k: v // 2 for k, v in self.history.items()}
 
         best_move = prev_score = None
 
-        # ── Depth adaptatif en finale ─────────────────────────
+        # Depth adaptatif en finale (conditions dans le bon ordre)
         piece_count = len(board.piece_map())
-        if piece_count <= 8 :
-            effective_depth = self.depth + 1 
-        elif piece_count <= 5 :
-            effective_depth = self.depth + 2 
-        else :                 
+        if piece_count <= 5:
+            effective_depth = self.depth + 2
+        elif piece_count <= 8:
+            effective_depth = self.depth + 1
+        else:
             effective_depth = self.depth
 
         for d in range(1, effective_depth + 1):
@@ -965,7 +968,8 @@ class TreeIA:
                 while True:
                     self._time_exceeded = False
                     score, move = self.negamax_root(d, a, b_)
-                    if self._time_exceeded: break
+                    if self._time_exceeded:
+                        break
                     if score <= a:
                         a -= delta; delta = min(delta * 2, 500)
                     elif score >= b_:
@@ -990,7 +994,7 @@ class TreeIA:
             if time.time() - self._search_start_time > self.time_limit * 0.85:
                 break
 
-        # Fallback
+        # ── Fallback ────────────────────────────────────────────────────
         if best_move is None:
             moves = list(board.legal_moves)
             if not moves:
@@ -1000,16 +1004,12 @@ class TreeIA:
                   if board.is_capture(m) and board.piece_at(m.to_square) else 0), m)
                 for m in moves
             )
-            best_val = scored[-1][0]
+            best_val  = scored[-1][0]
             best_move = random.choice([m for v, m in scored if v == best_val])
 
         best_move = self._smart_promotion(board, best_move)
         self._last_move = best_move
         return best_move
-
-    # ==================================================================
-    #   Negamax racine
-    # ==================================================================
 
     def negamax_root(self, depth, alpha=-10**9, beta=10**9):
         best_score, best_move = -10**9, None
@@ -1024,7 +1024,12 @@ class TreeIA:
 
             if score > best_score:
                 best_score, best_move = score, move
-            alpha = max(alpha, score)
+
+            if score > alpha:
+                alpha = score
+
+            if alpha >= beta:
+                break
 
             if time.time() - self._search_start_time > self.time_limit:
                 self._time_exceeded = True
