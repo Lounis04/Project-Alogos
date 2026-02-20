@@ -1,111 +1,70 @@
 OPENING_BOOK = {
-    # ———————————————————————————
-    # Position initiale (Blancs au trait)
-    # ———————————————————————————
-    'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1': [
-        'e4',   # Italienne, Espagnole, Sicilienne, Française, Scandinave, Alekhine, Pirc, Gambit Roi
-        'd4',   # Gambit Dame, Indienne Roi, Grünfeld
-        'c4',   # Anglaise
-        'Nf3',  # Réti
-        'f4',   # Gambit Roi
-    ],
-
-    # ———————————————————————————
-    # Noirs contre 1.e4
-    # ———————————————————————————
-    'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1': [
-        'e5',   # Italienne, Espagnole
-        'c5',   # Sicilienne
-        'e6',   # Française
-        'd5',   # Scandinave
-        'Nf6',  # Alekhine
-        'd6',   # Pirc
-    ],
-
-    # Positions après 1.e4 e5 2.Nf3
-    'rnbqkbnr/pppppppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 1 2': [
-        'Bc4',  # Italienne
-        'Bb5',  # Espagnole
-    ],
-
-    # Positions après 1.e4 c5 2.Nf3
-    'rnbqkbnr/pp1ppppp/8/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 1 2': [
-        'd4',   # Sicilienne ouverte
-    ],
-
-    # Positions après 1.e4 e6 2.d4 d5 3.e5
-    'rnbqkbnr/ppp1pppp/8/3pP3/3P4/8/PPP2PPP/RNBQKBNR w KQkq - 0 3': [
-        'Nc3',  # Française
-    ],
-
-    # Positions après 1.e4 d5 2.exd5 Qxd5 3.Nc3
-    'rnbqkbnr/pppppppp/8/8/8/2N5/PPPPPPPP/R1BQKBNR b KQkq - 1 3': [
-        'Qa5',  # Scandinave
-    ],
-
-    # Positions après 1.e4 Nf6 2.e5 Nd5 3.d4
-    'rnbqkb1r/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq - 1 3': [
-        'd6',  # Alekhine
-    ],
-
-    # Positions après 1.e4 d6 2.d4 Nf6 3.Nc3
-    'rnbqkb1r/pppppppp/3p4/8/3PP3/2N5/PPP2PPP/R1BQKBNR b KQkq - 2 3': [
-        'g6',  # Pirc
-    ],
-
-    # ———————————————————————————
-    # Noirs contre 1.d4
-    # ———————————————————————————
-    'rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq - 0 1': [
-        'd5',   # Gambit Dame, Indienne du Roi, Grünfeld
-        'Nf6',  # Indienne Roi
-        'e6',   # Indienne de Dame
-        'g6',   # Indienne Roi
-        'c5',   # Benoni
-    ],
-
-    # Positions après 1.d4 d5 2.c4
-    'rnbqkbnr/ppp1pppp/8/3p4/2P5/8/PP1PPPPP/RNBQKBNR w KQkq - 0 2': [
-        # Gambit Dame
-        'cxd5', # Accepter le gambit
-    ],
-
-    # Positions après 1.d4 Nf6 2.c4 g6 3.Nc3 d5
-    'rnbqkb1r/ppp1pppp/6p1/3p4/2P5/2N5/PP1PPPPP/R1BQKBNR w KQkq - 1 3': [
-        # Grünfeld
-        'cxd5',
-    ],
-
-    # ———————————————————————————
-    # Noirs contre 1.c4 (Anglaise)
-    # ———————————————————————————
-    'rnbqkbnr/pppppppp/8/8/2P5/8/PP1PPPPP/RNBQKBNR b KQkq - 0 1': [
-        'e5',   # Symétrique
-        'c5',   # Contre-Anglaise
-        'Nf6',  # Flexible
-        'e6',   # Fermé
-        'g6',   # Moderne / Fianchetto
-        'd5',   # Centre direct
-    ],
-
-    # ———————————————————————————
-    # Noirs contre 1.Nf3 (Réti)
-    # ———————————————————————————
-    'rnbqkbnr/pppppppp/8/8/8/5N2/PPPPPPPP/RNBQKB1R b KQkq - 1 1': [
-        'd5',   # Centre
-        'Nf6',  # Flexible
-        'g6',   # Moderne / Fianchetto
-        'e6',   # Fermé
-        'c5',   # Contre-coup de flanc
-    ],
-
-    # ———————————————————————————
-    # Positions après 1.e4 e5 2.f4
-    # ———————————————————————————
-    'rnbqkbnr/pppppppp/8/4p3/5P2/8/PPPP2PP/RNBQKBNR b KQkq - 0 2': [
-        'exf4', # Accepter le gambit
-        'd5',   # Refuser et contrer au centre
-        'Nc6',  # Développement
-    ],
+    'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1': ['e4',   'd4',   'c4',   'Nf3',  'f4',  'b3',   'g3',   ],
+    'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1': ['e5',   'c5',   'e6',   'c6',   'd5',   'Nf6',  'd6',   'g6',   ],
+    'rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2': ['Nf3', 'f4',   'Nc3',  'Bc4',  'd4',   ],
+    'rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2': ['Nc6',  'Nf6',  'd6',   'f5',   ],
+    'r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3': ['Bc4', 'Bb5',  'Nc3',  'd4',   'f4',   ],
+    'r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 3 3': ['Bc5',  'Nf6',  'Be7',  'f5',   ],
+    'r1bqk1nr/pppp1ppp/2n5/2b1p3/2B1P3/2P2N2/PP1P1PPP/RNBQK2R b KQkq - 0 4': ['Nf6', 'd6',   'Qe7',  'a6',   ],
+    'r1bqkb1r/pppp1ppp/2n2n2/4p1N1/2B1P3/8/PPPP1PPP/RNBQK2R b KQkq - 5 4': ['d5',   'Bc5',  ],
+    'r1bqkbnr/pppp1ppp/2n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 3 3': ['a6',   'Nf6',  'd6',   'Bc5',  'Nd4',  'g6',   'f5',   ],
+    'r1bqkbnr/1ppp1ppp/p1n5/4p3/B3P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 1 4': ['Nf6',  'b5',   'd6',  'Bc5',  ],
+    'r1bqkb1r/1ppp1ppp/p1n2n2/4p3/B3P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 3 5': ['Be7',  'Nxe4', 'b5',   ],
+    'r1bqk2r/2p2ppp/p1np1n2/1p2p3/4P3/1BP2N2/PP1P1PPP/RNBQR1K1 b kq - 0 8': ['O-O',   'Na5',   'Bg4',   ],
+    'r1bqkbnr/pppp1ppp/2n5/8/3NP3/8/PPP2PPP/RNBQKB1R b KQkq - 0 4': ['Nf6', 'Bc5',  'Qh4',  'Nxd4', ],
+    'rnbqkb1r/pppp1ppp/5n2/4N3/4P3/8/PPPP1PPP/RNBQKB1R b KQkq - 0 3': ['d6',   'Nxe4',],
+    'rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2': ['Nf3',  'Nc3',  'c3',  'f4',   'd4',   ],
+    'rnbqkbnr/pp1ppppp/8/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2': ['d6',   'Nc6',  'e6',   'g6',   'a6',   'Nf6',  ],
+    'rnbqkbnr/pp2pppp/3p4/8/3NP3/8/PPP2PPP/RNBQKB1R b KQkq - 0 4': ['Nf6', 'g6',  'Nc6',  'e6',   'a6',   ],
+    'rnbqkb1r/pp2pppp/3p1n2/8/3NP3/2N5/PPP2PPP/R1BQKB1R b KQkq - 1 5': ['a6',   'g6',   'e6',   'Nc6',  ],
+    'rnbqkb1r/1p2pppp/p2p1n2/6B1/3NP3/2N5/PPP2PPP/R2QKB1R b KQkq - 1 6': ['e6',  'Nbd7', 'h6',   ],
+    'rnbqkb1r/pp2pp1p/3p1np1/8/3NP3/2N1B3/PPP2PPP/R2QKB1R b KQkq - 1 6': ['Bg7',  'Nbd7', ],
+    'rnbqkbnr/pp1ppppp/8/2p5/4P3/2P5/PP1P1PPP/RNBQKBNR b KQkq - 0 2': ['Nf6',  'd5',   'e6',  'g6',   ],
+    'rnbqkbnr/pp1ppppp/8/2p5/4P3/2N5/PPPP1PPP/R1BQKBNR b KQkq - 1 2': ['Nc6',  'e6',  'd6',   'a6',   ],
+    'rnbqkbnr/pppp1ppp/4p3/8/3PP3/8/PPP2PPP/RNBQKBNR b KQkq - 0 2': ['d5',],
+    'rnbqkbnr/ppp2ppp/4p3/3p4/3PP3/8/PPP2PPP/RNBQKBNR w KQkq - 0 3': ['Nc3',  'Nd2',  'e5',   'exd5', ],
+    'rnbqk1nr/ppp2ppp/4p3/3p4/1b1PP3/2N5/PPP2PPP/R1BQKBNR w KQkq - 1 4': ['e5',   'a3',   'Bd3',  ],
+    'rnbqkb1r/ppp2ppp/4pn2/3p4/3PP3/2N5/PPP2PPP/R1BQKBNR w KQkq - 1 4': ['e5',   'Bg5',  'Bd3',  ],
+    'rnbqkbnr/pp3ppp/4p3/2ppP3/3P4/2P5/PP3PPP/RNBQKBNR b KQkq - 0 4': ['Nc6',  'Qb6',  'Bd7',  ],
+    'rnbqkb1r/ppp2ppp/4pn2/3pP3/3P4/8/PPPN1PPP/R1BQKBNR b KQkq - 0 4': ['Nfd7', 'c5',   ],
+    'rnbqkbnr/pp1ppppp/2p5/8/3PP3/8/PPP2PPP/RNBQKBNR b KQkq - 0 2': ['d5',   ],
+    'rnbqkbnr/pp2pppp/2p5/3p4/3PP3/8/PPP2PPP/RNBQKBNR w KQkq - 0 3': ['Nc3',  'Nd2', 'e5',   'exd5', 'f3',   ],
+    'rnbqkbnr/pp2pppp/2p5/8/3PN3/8/PPP2PPP/R1BQKBNR b KQkq - 0 4': ['Bf5',  'Nd7',  'Nf6',  ],
+    'rnbqk1nr/pp2pppp/2p5/5b2/3P4/6N1/PPP2PPP/R1BQKBNR b KQkq - 1 5': ['Bg6', 'e6',   ],
+    'rnbqkbnr/ppp1pppp/8/3P4/8/8/PPPP1PPP/RNBQKBNR b KQkq - 0 2': ['Qxd5', 'Nf6',  ],
+    'rnb1kbnr/ppp1pppp/8/3q4/8/2N5/PPPP1PPP/R1BQKBNR b KQkq - 1 3': ['Qa5',  'Qd8',  'Qd6',  'Qe5+', ],
+    'rnbqkb1r/pppppppp/5n2/4P3/8/8/PPPP1PPP/RNBQKBNR b KQkq - 0 2': ['Nd5',  'Ne4',  ],
+    'rnbqkb1r/pppppppp/8/3nP3/3P4/8/PPP2PPP/RNBQKBNR b KQkq - 0 3': ['d6',   'Nb6',  'Nf4',  ],
+    'rnbqkb1r/ppp1pppp/3p4/3nP3/3P4/5N2/PPP2PPP/RNBQKB1R b KQkq - 1 4': ['g6',   'Bg4',  'dxe5', 'Nb6',  ],
+    'rnbqkbnr/ppp1pppp/3p4/8/3PP3/8/PPP2PPP/RNBQKBNR b KQkq - 0 2': ['Nf6',  'g6',   'Nd7',  ],
+    'rnbqkb1r/ppp1pppp/3p1n2/8/3PP3/2N5/PPP2PPP/R1BQKBNR b KQkq - 1 3': ['g6',   'c6',  'e5',  'Bg4',  ],
+    'rnbqkb1r/ppp1pp1p/3p1np1/8/3PP3/2N2N2/PPP2PPP/R1BQKB1R b KQkq - 1 4': ['Bg7', ],
+    'rnbqkbnr/pppp1ppp/8/4p3/4PP2/8/PPPP2PP/RNBQKBNR b KQkq - 0 2': ['exf4', 'd5',   'Bc5',  'Nc6',  ],
+    'rnbqkbnr/pppp1ppp/8/8/4Pp2/5N2/PPPP2PP/RNBQKB1R b KQkq - 1 3': ['g5',   'd6',   'Nf6',  'Be7',  'd5',   ],
+    'rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq - 0 1': ['d5',   'Nf6', 'e6',  'f5',   'g6',   'c5',   'b6',   'c6',   ],
+    'rnbqkbnr/ppp1pppp/8/3p4/2PP4/8/PP2PPPP/RNBQKBNR b KQkq - 0 2': ['e6',   'c6',   'dxc4', 'Nf6',  'e5',   'Nc6',  ],
+    'rnbqkbnr/ppp2ppp/4p3/3p4/2PP4/2N5/PP2PPPP/R1BQKBNR b KQkq - 1 3': ['Nf6',  'Bb4',  'Be7',  'c6',   ],
+    'rnbqkb1r/pp2pppp/2p2n2/3p4/2PP4/2N2N2/PP2PPPP/R1BQKB1R b KQkq - 1 4': ['dxc4', 'e6',   'a6',   'Bf5',  ],
+    'rnbqkbnr/ppp1pppp/8/8/2pP4/5N2/PP2PPPP/RNBQKB1R b KQkq - 1 3': ['Nf6',  'e6',  'a6',   'c5',   ],
+    'rnbqkb1r/pppppppp/5n2/8/2PP4/8/PP2PPPP/RNBQKBNR b KQkq - 0 2': ['g6',   'e6',   'c5',   'd5',  'b6',   'e5',   ],
+    'rnbqkb1r/pppppp1p/5np1/8/2PP4/2N5/PP2PPPP/R1BQKBNR b KQkq - 1 3': ['Bg7',  'd5',   'c5',   ],
+    'rnbqk2r/ppp1ppbp/3p1np1/8/2PPP3/2N2N2/PP3PPP/R1BQKB1R b KQkq - 1 5': ['O-O',  'Bg4',  'c5',   'Na6',  ],
+    'rnbq1rk1/ppp2pbp/3p1np1/4p3/2PPP3/2N2N2/PP2BPPP/R1BQ1RK1 b - - 3 7': ['Nc6',  'Na6',  'Nbd7', 'exd4', 'c6',   ],
+    'rnbqk1nr/pppp1ppp/4p3/8/1bPP4/2N5/PP2PPPP/R1BQKBNR w KQkq - 2 4': ['Qc2',  'e3',   'a3',   'Nf3',  'f3',   ],
+    'rnbqkb1r/ppp1pp1p/5np1/3P4/3P4/2N5/PP2PPPP/R1BQKBNR b KQkq - 0 4': ['Nxd5', ],
+    'rnbqkb1r/ppp1pp1p/6p1/3n4/3PP3/2N5/PP3PPP/R1BQKBNR b KQkq - 0 5': ['Nxc3', 'Nb6',  ],
+    'rnbqk2r/ppp1ppbp/6p1/8/2BPP3/2P5/P4PPP/R1BQK1NR b KQkq - 1 7': ['c5',   'O-O',  ],
+    'rnbqkb1r/pp1ppppp/5n2/2pP4/2P5/8/PP2PPPP/RNBQKBNR b KQkq - 0 3': ['e6',   'e5',   'g6',   'd6',   ],
+    'rnbqkb1r/pppp1ppp/5n2/4P3/2P5/8/PP2PPPP/RNBQKBNR b KQkq - 0 3': ['Ng4',  'Ne4',  ],
+    'rn1qkbnr/pbpppppp/1p6/8/2PP4/5NP1/PP2PP1P/RNBQKB1R b KQkq - 0 4': ['e6',   'Nf6',  'g6',   ],
+    'rnbqkbnr/ppppp1pp/8/5p2/3P4/8/PPP1PPPP/RNBQKBNR w KQkq - 0 2': ['c4',   'Nf3',  'e4',   'g3',   ],
+    'rnbqkb1r/ppppp1pp/5n2/5p2/2PP4/6P1/PP2PP1P/RNBQKBNR b KQkq - 0 3': ['g6',   'e6',   'd6',   ],
+    'rnbqkbnr/pppppppp/8/8/2P5/8/PP1PPPPP/RNBQKBNR b KQkq - 0 1': ['e5',   'Nf6',  'c5',   'e6',   'g6',  'd5',   'c6',   'b6',   ],
+    'rnbqkbnr/pppp1ppp/8/4p3/2P5/2N5/PP1PPPPP/R1BQKBNR b KQkq - 1 2': ['Nf6',  'Nc6',  'f5',   'g6',   'Bb4',  ],
+    'rnbqkb1r/pppp1ppp/4pn2/8/2P1P3/2N5/PP1P1PPP/R1BQKBNR b KQkq - 0 3': ['d5',   'Bb4',  'c5',  ],
+    'rnbqkbnr/pppppppp/8/8/8/5N2/PPPPPPPP/RNBQKB1R b KQkq - 1 1': ['d5',   'Nf6',  'g6',  'e6',   'c5',   'd6',   'c6',   ],
+    'rnbqkbnr/ppp1pppp/8/3p4/2P5/5N2/PP1PPPPP/RNBQKB1R b KQkq - 0 2': ['d4',   'dxc4', 'e6',   'c6',   'Nf6',  ],
+    'rnbqkb1r/ppp2ppp/4pn2/3p4/2PP4/5NP1/PP2PP1P/RNBQKB1R b KQkq - 0 4': ['Be7',  'dxc4', 'c5',   'Bb4+', ],
+    'rnbqkb1r/ppp1pppp/5n2/3p4/3P4/4PN2/PPP2PPP/RNBQKB1R b KQkq - 0 3': ['e6', 'Bf5',  'c5',   'c6',   'Bg4',  ],
+    'rnbqkbnr/pppppppp/8/8/5P2/8/PPPPP1PP/RNBQKBNR b KQkq - 0 1': ['d5',   'Nf6',  'e5',   'c5',   ],
 }
-
